@@ -1,0 +1,85 @@
+{
+  "strategy": "repeated_kfold",
+  "n_splits": 2,
+  "n_repeats": 1,
+  "random_state": 2026,
+  "n_pairs_total": 25,
+  "members": [
+    {
+      "member_tag": "m000_r01_f01_s10000",
+      "member_idx": 0,
+      "repeat_idx": 0,
+      "fold_idx": 0,
+      "seed": 10000,
+      "n_train_pairs": 12,
+      "n_validation_pairs": 13,
+      "train_sample_ids": [
+        "006_jetti_project_file_pvo",
+        "007_jetti_project_file_leopard_lep",
+        "011_jetti_project_file_rm_crushed",
+        "014_jetti_project_file_bag",
+        "020_jetti_project_file_hypogene_supergene_hypogene_master_composite",
+        "022_jetti_project_file_stingray_1",
+        "024_jetti_project_file_024cv_cpy",
+        "jetti_file_elephant_ii_ugm2_coarse",
+        "jetti_project_file_elephant_scl_sample_escondida",
+        "jetti_project_file_elephant_site",
+        "jetti_project_file_leopard_scl_sample_los_bronces",
+        "jetti_project_file_toquepala_scl_sample_fresca"
+      ],
+      "validation_sample_ids": [
+        "003_jetti_project_file_amcf_head",
+        "007b_jetti_project_file_tiger_tgr",
+        "011_jetti_project_file_rm",
+        "014_jetti_project_file_kmb",
+        "015_jetti_project_file_amcf_6in",
+        "015_jetti_project_file_amcf_8in",
+        "017_jetti_project_file_ea_mill_feed_combined",
+        "026_jetti_project_file_sample_1_primary_sulfide",
+        "026_jetti_project_file_sample_2_carrizalillo",
+        "026_jetti_project_file_sample_3_secondary_sulfide",
+        "jetti_file_elephant_ii_pq",
+        "jetti_file_elephant_ii_ugm2",
+        "jetti_project_file_zaldivar_scl_sample_zaldivar"
+      ]
+    },
+    {
+      "member_tag": "m001_r01_f02_s10001",
+      "member_idx": 1,
+      "repeat_idx": 0,
+      "fold_idx": 1,
+      "seed": 10001,
+      "n_train_pairs": 13,
+      "n_validation_pairs": 12,
+      "train_sample_ids": [
+        "003_jetti_project_file_amcf_head",
+        "007b_jetti_project_file_tiger_tgr",
+        "011_jetti_project_file_rm",
+        "014_jetti_project_file_kmb",
+        "015_jetti_project_file_amcf_6in",
+        "015_jetti_project_file_amcf_8in",
+        "017_jetti_project_file_ea_mill_feed_combined",
+        "026_jetti_project_file_sample_1_primary_sulfide",
+        "026_jetti_project_file_sample_2_carrizalillo",
+        "026_jetti_project_file_sample_3_secondary_sulfide",
+        "jetti_file_elephant_ii_pq",
+        "jetti_file_elephant_ii_ugm2",
+        "jetti_project_file_zaldivar_scl_sample_zaldivar"
+      ],
+      "validation_sample_ids": [
+        "006_jetti_project_file_pvo",
+        "007_jetti_project_file_leopard_lep",
+        "011_jetti_project_file_rm_crushed",
+        "014_jetti_project_file_bag",
+        "020_jetti_project_file_hypogene_supergene_hypogene_master_composite",
+        "022_jetti_project_file_stingray_1",
+        "024_jetti_project_file_024cv_cpy",
+        "jetti_file_elephant_ii_ugm2_coarse",
+        "jetti_project_file_elephant_scl_sample_escondida",
+        "jetti_project_file_elephant_site",
+        "jetti_project_file_leopard_scl_sample_los_bronces",
+        "jetti_project_file_toquepala_scl_sample_fresca"
+      ]
+    }
+  ]
+}

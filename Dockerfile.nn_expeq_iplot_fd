@@ -1,0 +1,44 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MPLBACKEND=Agg
+
+WORKDIR /app/Rosetta
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && python -m pip install --no-compile \
+        dash \
+        matplotlib \
+        numpy \
+        openpyxl \
+        pandas \
+        plotly \
+        scikit-learn \
+        scipy \
+    && python -m pip install --no-compile --index-url https://download.pytorch.org/whl/cpu torch \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p \
+        /app/Rosetta \
+        /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/database_ready \
+        /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/NN_Pytorch_ExpEq_columns_only_v7/models \
+        /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/NN_Pytorch_ExpEq_columns_only_v7/outputs
+
+COPY PythonProjects/Rosetta/NN_ExpEq_columns_only_v7_iplot_FD.py /app/Rosetta/
+COPY PythonProjects/Rosetta/NN_ExpEq_columns_only_v7.py /app/Rosetta/
+COPY PythonProjects/Rosetta/rosetta_mineralogy_clustering.py /app/Rosetta/
+
+COPY Rosetta/database_ready/df_recCu_catcontrol_projects_averaged.csv \
+    /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/database_ready/df_recCu_catcontrol_projects_averaged.csv
+COPY Rosetta/NN_Pytorch_ExpEq_columns_only_v7/models/validation_members \
+    /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/NN_Pytorch_ExpEq_columns_only_v7/models/validation_members
+COPY Rosetta/NN_Pytorch_ExpEq_columns_only_v7/outputs/run_manifest.json \
+    /Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/NN_Pytorch_ExpEq_columns_only_v7/outputs/run_manifest.json
+
+EXPOSE 8057
+
+CMD ["python", "/app/Rosetta/NN_ExpEq_columns_only_v7_iplot_FD.py", "--host", "0.0.0.0", "--port", "8057", "--project-root", "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/Rosetta/NN_Pytorch_ExpEq_columns_only_v7"]

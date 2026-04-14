@@ -1,0 +1,37 @@
+{
+  "risk_level": "YELLOW",
+  "risk_score": 6,
+  "message": "Moderate extrapolation risk: use prediction with caution.",
+  "missing_predictors": [],
+  "hard_flags": [
+    "High ensemble uncertainty: catalyzed P90-P10 max width=13.70"
+  ],
+  "soft_flags": [
+    "final_day: 1680 outside train P05-P95 [526.4, 1487]",
+    "active_addition_days: 1379 outside train P05-P95 [371, 1295]",
+    "Ensemble uncertainty median width=13.31",
+    "Relative uncertainty median=33.19%"
+  ],
+  "distance_checks": {
+    "mahalanobis_distance": 3.892645677253864,
+    "mahalanobis_train_p95": 4.423881865601027,
+    "nearest_neighbor_distance": 0.0,
+    "nearest_neighbor_distance_train_p95": 3.712442540447868
+  },
+  "dose_descriptors": {
+    "total_dose": 0.615,
+    "final_day": 1680.0,
+    "first_addition_day": 301.0,
+    "day_to_50pct_dose": 609.0,
+    "day_to_90pct_dose": 945.0,
+    "max_addition_rate": 0.003999999999999999,
+    "active_addition_days": 1379.0
+  },
+  "uncertainty_summary": {
+    "control_width_median": 10.942381858825684,
+    "control_width_max": 11.440006256103516,
+    "catalyzed_width_median": 13.306400299072266,
+    "catalyzed_width_max": 13.703739166259766,
+    "catalyzed_relative_width_median": 0.33190423250198364
+  }
+}

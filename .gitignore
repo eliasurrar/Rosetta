@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.mplconfig/
+
+# Local editor/project noise
+.vscode/
+
+# Packaged exports and large training artifacts
+*.zip
+NN_Pytorch_ExpEq_columns_only_v7/
+NN_Pytorch_ExpEq_columns_only_v8/
+NN_Pytorch_ExpEq_columns_only_v9/
+NN_Pytorch_ExpEq_columns_only_v10/

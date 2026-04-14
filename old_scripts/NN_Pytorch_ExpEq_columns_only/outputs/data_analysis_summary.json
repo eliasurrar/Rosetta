@@ -1,0 +1,79 @@
+{
+  "created_utc": "2026-03-05T21:58:09.555909+00:00",
+  "n_rows": 50,
+  "n_columns": 49,
+  "predictor_columns": [
+    "leach_duration_days",
+    "cumulative_catalyst_addition_kg_t",
+    "cu_%",
+    "acid_soluble_%",
+    "cyanide_soluble_%",
+    "residual_cpy_%",
+    "material_size_p80_in",
+    "grouped_copper_sulfides",
+    "grouped_secondary_copper",
+    "grouped_acid_generating_sulfides",
+    "grouped_fe_oxides",
+    "grouped_carbonates",
+    "column_height_m",
+    "column_inner_diameter_m",
+    "bornite"
+  ],
+  "static_predictor_columns": [
+    "cu_%",
+    "acid_soluble_%",
+    "cyanide_soluble_%",
+    "residual_cpy_%",
+    "material_size_p80_in",
+    "grouped_copper_sulfides",
+    "grouped_secondary_copper",
+    "grouped_acid_generating_sulfides",
+    "grouped_fe_oxides",
+    "grouped_carbonates",
+    "column_height_m",
+    "column_inner_diameter_m",
+    "bornite"
+  ],
+  "n_unique_pairs": 25,
+  "status_counts": {
+    "Control": 25,
+    "Catalyzed": 25
+  },
+  "missing_counts_predictors": {
+    "leach_duration_days": 0,
+    "cumulative_catalyst_addition_kg_t": 0,
+    "cu_%": 0,
+    "acid_soluble_%": 0,
+    "cyanide_soluble_%": 0,
+    "residual_cpy_%": 0,
+    "material_size_p80_in": 0,
+    "grouped_copper_sulfides": 0,
+    "grouped_secondary_copper": 0,
+    "grouped_acid_generating_sulfides": 0,
+    "grouped_fe_oxides": 0,
+    "grouped_carbonates": 0,
+    "column_height_m": 0,
+    "column_inner_diameter_m": 0,
+    "bornite": 0
+  },
+  "dynamic_array_stats": {
+    "leach_duration_days": {
+      "min_len": 71.0,
+      "median_len": 109.5,
+      "max_len": 240.0,
+      "mean_finite_fraction": 1.0
+    },
+    "cumulative_catalyst_addition_kg_t": {
+      "min_len": 71.0,
+      "median_len": 109.5,
+      "max_len": 240.0,
+      "mean_finite_fraction": 0.856341041355124
+    },
+    "cu_recovery_%": {
+      "min_len": 71.0,
+      "median_len": 109.5,
+      "max_len": 240.0,
+      "mean_finite_fraction": 0.856341041355124
+    }
+  }
+}

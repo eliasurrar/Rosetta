@@ -1,0 +1,12 @@
+{
+  "control_rmse": 10.09662669331742,
+  "control_mae": 8.133575564417919,
+  "control_r2": 0.1862685873210146,
+  "catalyzed_rmse": 10.87446723665185,
+  "catalyzed_mae": 8.037233327999441,
+  "catalyzed_r2": 0.3552287128843681,
+  "overall_rmse": 10.45860440721199,
+  "overall_mae": 8.089630585680675,
+  "overall_r2": 0.33573800388664465,
+  "max_ordering_violation_control_minus_cat": 0.0
+}

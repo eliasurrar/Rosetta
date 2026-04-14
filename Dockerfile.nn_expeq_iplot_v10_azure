@@ -1,0 +1,51 @@
+FROM python:3.12-slim
+
+ARG SOURCE_PROJECT_ROOT=Rosetta/NN_Pytorch_ExpEq_columns_only_v10
+ARG SOURCE_DATASET=Rosetta/build_assets/df_recCu_catcontrol_projects_averaged.csv
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MPLBACKEND=Agg \
+    APP_ROOT=/app/Rosetta \
+    DATA_ROOT=/opt/rosetta-data \
+    PROJECT_ROOT=/opt/rosetta-project/NN_Pytorch_ExpEq_columns_only_v10 \
+    ROSETTA_DATA_PATH=/opt/rosetta-data/df_recCu_catcontrol_projects_averaged.csv \
+    ROSETTA_PROJECT_ROOT=/opt/rosetta-project/NN_Pytorch_ExpEq_columns_only_v10
+
+WORKDIR /app/Rosetta
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && python -m pip install --upgrade pip \
+    && python -m pip install --no-compile \
+        dash==4.1.0 \
+        matplotlib==3.10.8 \
+        numpy==2.4.3 \
+        openpyxl==3.1.5 \
+        pandas==3.0.1 \
+        plotly==6.6.0 \
+        scikit-learn==1.8.0 \
+        scipy==1.17.1 \
+    && python -m pip install --no-compile --index-url https://download.pytorch.org/whl/cpu torch==2.11.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p \
+        "${APP_ROOT}" \
+        "${DATA_ROOT}" \
+        "${PROJECT_ROOT}/models" \
+        "${PROJECT_ROOT}/outputs"
+
+COPY Rosetta/NN_ExpEq_columns_only_v10_iplot.py ${APP_ROOT}/
+COPY Rosetta/NN_ExpEq_columns_only_v10.py ${APP_ROOT}/
+COPY Rosetta/rosetta_mineralogy_clustering.py ${APP_ROOT}/
+COPY Rosetta/assets/ ${APP_ROOT}/assets/
+
+COPY ${SOURCE_DATASET} ${ROSETTA_DATA_PATH}
+COPY ${SOURCE_PROJECT_ROOT}/models/ ${PROJECT_ROOT}/models/
+COPY ${SOURCE_PROJECT_ROOT}/outputs/ ${PROJECT_ROOT}/outputs/
+
+EXPOSE 8057
+
+CMD ["python", "/app/Rosetta/NN_ExpEq_columns_only_v10_iplot.py", "--host", "0.0.0.0", "--port", "8057", "--project-root", "/opt/rosetta-project/NN_Pytorch_ExpEq_columns_only_v10"]

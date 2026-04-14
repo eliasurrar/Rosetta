@@ -1,0 +1,2 @@
+stage,control_rmse,control_mae,control_r2,catalyzed_rmse,catalyzed_mae,catalyzed_r2,overall_rmse,overall_mae,overall_r2,max_ordering_violation_control_minus_cat
+validation_ensemble,7.316645343829909,6.030912203696751,0.5726807165485326,9.236453169441704,6.66410620653154,0.5348423409269893,8.24794996780759,6.319733576601777,0.5868726289791913,0.0
