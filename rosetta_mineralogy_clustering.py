@@ -45,6 +45,45 @@ df_mineralogy = pd.read_csv('/Users/administration/Library/CloudStorage/OneDrive
 df_mineralogy.dropna(subset=['project_sample_id'], inplace=True)
 df_mineralogy.reset_index(drop=True, inplace=True)
 
+# ============================================================
+# Fix project_sample_id for rows not mapped by ETL
+# (project_sample_id = '0' means the ETL did not assign an ID)
+# Identified unambiguously via start_cell and sample columns.
+# Rows with no match in the leaching CSV are intentionally skipped:
+#   - 026 mixed, Toquepala Antigua, 020 Hardy (already mapped separately)
+# ============================================================
+_start_cell_map = {
+    ('007B Jetti Project File - Tiger',          'tbl-Mineralcomposition'):                      '007b_jetti_project_file_tiger_tgr',
+    ('007 Jetti Project File - Leopard',         'tbl-Mineralogy_Modals_LEP'):                   '007_jetti_project_file_leopard_lep',
+    ('015 Jetti Project File',                   'tbl-Mineralogy_Modals_SGS'):                   '015_jetti_project_file_amcf',  # duplicated below for 6in/8in
+    ('014 Jetti Project File',                   'tbl-BAG_Mineralogy_Modals'):                   '014_jetti_project_file_bag',
+    ('014 Jetti Project File',                   'tbl-KMB_Mineralogy_Modals'):                   '014_jetti_project_file_kmb',
+    ('022 Jetti Project File',                   'tbl-Mineralcomposition'):                      '022_jetti_project_file_stingray_1',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_primary_sulfide'):       '026_jetti_project_file_sample_1_primary_sulfide',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_carrizalillo'):          '026_jetti_project_file_sample_2_carrizalillo',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_secondary_sulfide'):     '026_jetti_project_file_sample_3_secondary_sulfide',
+    ('Jetti Project File - Zaldivar SCL',        'tbl-Modals_Zaldivar'):                        'jetti_project_file_zaldivar_scl_sample_zaldivar',
+    ('Jetti Project File - Leopard SCL',         'tbl-Modals_Los_Bronces'):                     'jetti_project_file_leopard_scl_sample_los_bronces',
+    ('Jetti Project File - Elephant SCL',        'tbl-Modals_MEL'):                             'jetti_project_file_elephant_scl_sample_escondida',
+    ('Jetti File - Elephant II Ver 2 UGM',       'tbl-Mineralogy_Modals'):                      'jetti_file_elephant_ii_ugm2',
+    ('Jetti Project File - Elephant (Site)',     'tbl-Mineralogy_Modals_M1'):                   'jetti_project_file_elephant_site',
+    ('Jetti Project File - Toquepala SCL',       'tbl-Modals_Toquepala_Fresca'):                'jetti_project_file_toquepala_scl_sample_fresca',
+    ('020 Jetti Project File Hypogene_Supergene','tbl-Mineralogy_Modals_Sup2'):                 '020_jetti_project_file_hypogene_supergene_super',
+}
+_mask_zero = df_mineralogy['project_sample_id'].astype(str) == '0'
+for (proj, sc), new_id in _start_cell_map.items():
+    _mask = _mask_zero & (df_mineralogy['project_name'] == proj) & (df_mineralogy['start_cell'].astype(str) == sc)
+    df_mineralogy.loc[_mask, 'project_sample_id'] = new_id
+# 006: identified via sample column
+_mask_006_pvo  = _mask_zero & (df_mineralogy['project_name'] == '15289-006 - Column Leach_v1.2020-08-28') & (df_mineralogy['sample'].astype(str) == 'PVO')
+_mask_006_pvls = _mask_zero & (df_mineralogy['project_name'] == '15289-006 - Column Leach_v1.2020-08-28') & (df_mineralogy['sample'].astype(str) == 'PVLS')
+df_mineralogy.loc[_mask_006_pvo,  'project_sample_id'] = '006_jetti_project_file_pvo'
+df_mineralogy.loc[_mask_006_pvls, 'project_sample_id'] = '006_jetti_project_file_pvls'
+# Elephant II UGM2: same mineralogy applies to both ugm2 and ugm2_coarse
+_ugm2_rows = df_mineralogy[df_mineralogy['project_sample_id'] == 'jetti_file_elephant_ii_ugm2'].copy()
+_ugm2_rows['project_sample_id'] = 'jetti_file_elephant_ii_ugm2_coarse'
+df_mineralogy = pd.concat([df_mineralogy, _ugm2_rows], ignore_index=True)
+
 cols_to_drop = ['origin', 'project_name', 'sample', 'sheet_name', 'start_cell', 'index']
 df_mineralogy.drop(columns=cols_to_drop, inplace=True)
 list(df_mineralogy.columns)
@@ -172,7 +211,10 @@ fe_oxides = ['oxides', 'fe_oxides', 'other_oxides', 'hematite', 'magnetite',
 carbonates = ['carbonates', 'calcite', 'dolomite', 'other_carbonates', 'siderite']
 
 # Group 12: Accessory Minerals (& Miscellaneous, merged with 10)
-accessory_minerals = ['apatite_monazite', 'zircon', 'barite', 'rutile', 'rutile_anatase', 'ilmenite', 'mg_so4', 'svanbergite', 'fe_al_po4', 'monazite', 'dioptase', 'corundum_gibbsite_boehmite', 'apatite']
+accessory_minerals = ['zircon', 'barite', 'rutile', 'rutile_anatase', 'ilmenite', 'mg_so4', 'dioptase', 'corundum_gibbsite_boehmite',]
+
+# Group 12.1 Phospate minerals (potentially acid consuming, but not currently weighted as such)
+phosphate_minerals = ['apatite_monazite', 'fe_al_po4', 'monazite', 'apatite', 'svanbergite']
 
 # Group 13: Others (ambiguous minerals)
 # all_groups = copper_sulfides + secondary_copper + acid_generating_sulfides + gangue_sulfides + gangue_silicates + clays_and_micas + accessory_silicates + sulfates + fe_oxides + accessory_misc + carbonates + accessory_minerals
@@ -208,6 +250,7 @@ df_mineralogy_grouped['grouped_fe_oxides'] = sum_available_columns(df_mineralogy
 # df_mineralogy_grouped['grouped_accessory_misc'] = sum_available_columns(df_mineralogy, accessory_misc)
 df_mineralogy_grouped['grouped_carbonates'] = sum_available_columns(df_mineralogy, carbonates)
 df_mineralogy_grouped['grouped_accessory_minerals'] = sum_available_columns(df_mineralogy, accessory_minerals)
+df_mineralogy_grouped['grouped_phosphate_minerals'] = sum_available_columns(df_mineralogy, phosphate_minerals)
 df_mineralogy_grouped['grouped_other_not_grouped'] = sum_available_columns(df_mineralogy, other_not_grouped)
 
 

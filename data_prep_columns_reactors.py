@@ -494,7 +494,9 @@ def prepare_column_train_data(
         if not per_test:
             return np.array([])
         stacked = np.vstack(per_test)
-        with np.errstate(all="ignore"):
+        import warnings
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             avg = np.nanmean(stacked, axis=0)
         return avg
 
@@ -621,7 +623,7 @@ def prepare_column_train_data(
     if leach_days not in drop_cols:
         drop_cols.append(leach_days)
     feature_cols = [c for c in df.columns if c not in drop_cols]
-    numeric_cols = [c for c in feature_cols if np.issubdtype(out_df[c].dtype, np.number)]
+    numeric_cols = [c for c in feature_cols if pd.api.types.is_numeric_dtype(out_df[c])]
     
     # Get feature weights from config
     raw_weights = config.get('column_tests_feature_weighting', {}).get('weights', {})
@@ -794,7 +796,8 @@ def add_match_keys(df_columns, df_reactors, match_map, key_col="project_sample_i
     df_reactors = df_reactors.copy()
 
     # Columns: use their project_sample_id as the canonical key when present in match_map
-    df_columns[key_col] = np.nan
+    df_columns[key_col] = None  # use None (object dtype) instead of np.nan (float64)
+    df_columns[key_col] = df_columns[key_col].astype(object)
     in_map = df_columns["project_sample_id"].isin(match_map.keys())
     df_columns.loc[in_map, key_col] = df_columns.loc[in_map, "project_sample_id"]
 

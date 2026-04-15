@@ -82,6 +82,7 @@ cols_to_numeric = [
 for b in cols_to_numeric:
     df_merged[b] = pd.to_numeric(df_merged[b], errors='coerce')
 
+df_column_summary['col_name'] = df_column_summary['col_name'].astype(object)
 df_column_summary.loc[df_column_summary['index'].str.startswith('_'), 'col_name'] = df_column_summary.loc[ df_column_summary['index'].str.startswith('_'), 'index'].str.lstrip('_')
 df_column_summary.loc[:, 'col_name'] = df_column_summary['col_name'].fillna(df_column_summary['index'])
 df_merged.loc[:, 'sheet_name'] = df_merged['sheet_name'].str.replace('-', '_') # special treatment for Tiger ROM file which has - instead of _ on the sheet name
@@ -563,7 +564,7 @@ df_acsummary_filtered = df_acsummary_filtered[~((df_acsummary_filtered['project_
 
 df_acsummary_filtered[df_acsummary_filtered['project_name']=='035 Jetti Project File']
 
-sorted(df_acsummary_filtered['project_sample_id'].unique())
+sorted(df_acsummary_filtered['project_sample_id'].dropna().unique())
 df_maker_index['project_sample_id'].unique()
 
 replacement_dict = {

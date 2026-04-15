@@ -203,6 +203,8 @@ HEADERS_DICT_COLUMNS = {
     # "grouped_copper_oxides": ["Copper Oxides (%)", "numerical", 1],
     # "grouped_mixed_copper_ores": ["Mixed Copper Ores (%)", "numerical", 0],
     "grouped_acid_generating_sulfides": ["Acid Generating Sulphides (%)", "numerical", 0],
+    "grouped_phosphate_minerals": ["Phosphate Minerals (%)", "numerical", 0],
+    # "grouped_gangue_sulfides": ["Gangue Sulphides (%)", "numerical", 0], # excluded only because most of the values are zero.
     # "grouped_gangue_silicates": ["Gangue Silicates (%)", "numerical", 0], # try this, working perfectly without it
     "grouped_fe_oxides": ["Fe Oxides (%)", "numerical", 0], # try this, working perfectly without it
     "grouped_carbonates": ["Carbonates (%)", "numerical", 0],
@@ -322,7 +324,7 @@ CONFIG = {
         "control_early_process": 0.25,
         "tau_onset": 0.50,
         "single_uplift_late_accel": 0.15,
-        "ferric_orp_aux": 0.05,
+        "ferric_orp_aux": 0.10,
     },
     "plot_dpi": 300,
     "ensemble_pi_low": 10,
@@ -400,7 +402,6 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     # ------------------------------------------------------------------
     # Amax-oriented latent: broad chemical recoverability / receptivity
     # Intended support: fit_a1 + fit_a2
-    # Keep broad, but not redundant with fast_leach_inventory or transform_strength
     # ------------------------------------------------------------------
     "chem_raw": {
         "acid_soluble_%": 0.26,
@@ -413,8 +414,9 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_copper_oxides": 0.20,
         "grouped_mixed_copper_ores": 0.04,
         "grouped_acid_generating_sulfides": 0.04,
+        "grouped_gangue_sulfides": -0.08,        # non-Cu sulfides dilute overall Cu recoverability
         "grouped_gangue_silicates": -0.14,
-        "grouped_fe_oxides": -0.04,
+        "grouped_fe_oxides": 0.04, # Mixed group — net slightly positive due to Cu-bearing members
         "grouped_carbonates": -0.24,
         "apparent_bulk_density_t_m3": -0.14,
         "material_size_to_column_diameter_ratio": -0.12,
@@ -425,7 +427,6 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "copper_secondary_sulfides_equivalent": 0.18,
         "copper_sulfides_equivalent": 0.06,
         "copper_oxides_equivalent": 0.22,
-        # "grouped_accessory_minerals": 0.00,
     },
 
     # ------------------------------------------------------------------
@@ -448,7 +449,8 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "fe:cu": 0.16,
         "cu:fe": -0.10,
         "material_size_p80_in": 0.22,
-        "grouped_acid_generating_sulfides": 0.08,
+        "grouped_acid_generating_sulfides": 0.00, # Pyrite regenerates Fe³⁺, doesn't passivate CuFeS₂
+        "grouped_gangue_sulfides": 0.06,         # galena → PbSO₄ adds a physical passivation component
         "grouped_gangue_silicates": 0.14,
         "grouped_fe_oxides": 0.08,
         "grouped_carbonates": 0.12,
@@ -461,7 +463,6 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     # ------------------------------------------------------------------
     # Redox / pyrite / ferric assistance
     # Intended support: catalyst responsiveness and some fit_b2 relief
-    # Not meant to replace fast inventory
     # ------------------------------------------------------------------
     "ferric_synergy": {
         "fe:cu": 0.30,
@@ -475,24 +476,24 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_primary_copper_sulfides": 0.10,
         "grouped_secondary_copper_sulfides": 0.08,
         "grouped_acid_generating_sulfides": 0.34,
+        "grouped_gangue_sulfides": -0.24,        # STRONGEST effect: ZnS+PbS both oxidised by Fe³⁺,
+                                                 # directly depleting the ferric pool for CuFeS₂ attack
         "grouped_gangue_silicates": -0.06,
         "grouped_fe_oxides": 0.08,
-        "grouped_carbonates": -0.22,
+        "grouped_carbonates": -0.18, # Siderite releases Fe²⁺ that partially offsets the acid buffer penalty
+        "grouped_phosphate_minerals": -0.04, # Apatite and similar tie up Fe²⁺ and release acidity, both bad for ferric synergy
         "material_size_p80_in": -0.04,
         "apparent_bulk_density_t_m3": -0.02,
         "material_size_to_column_diameter_ratio": -0.06,
         "bornite": 0.10,
-        # "chem_raw": 0.06,
         "primary_passivation_drive": 0.16,
     },
 
     # ------------------------------------------------------------------
     # Blended solution responsiveness
     # Intended support: fit_b1 and some Amax expression
-    # Reduced overlap: no longer a second chem_raw or a second oxide block
     # ------------------------------------------------------------------
     "chem_interaction": {
-        # "chem_raw": 0.22,
         "primary_passivation_drive": -0.04,
         "copper_primary_sulfides_equivalent": 0.02,
         "acid_soluble_%": 0.14,
@@ -504,6 +505,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_mixed_copper_ores": 0.04,
         "fe:cu": 0.04,
         "cu:fe": -0.02,
+        "grouped_gangue_sulfides": -0.06,        # reduces clean solution chemistry signal
         "grouped_gangue_silicates": -0.08,
         "grouped_carbonates": -0.16,
         "cyanide_soluble_%": 0.10,
@@ -535,9 +537,12 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "cu:fe": -0.06,
         "material_size_p80_in": -0.08,
         "grouped_acid_generating_sulfides": 0.18,
+        "grouped_gangue_sulfides": -0.16,        # Fe³⁺ competition reduces how much catalyst benefit
+                                                 # reaches the chalcopyrite target
         "grouped_gangue_silicates": -0.10,
         "grouped_fe_oxides": 0.02,
         "grouped_carbonates": -0.16,
+        "grouped_phosphate_minerals": -0.06, # Phosphates tie up Fe²⁺ and release acidity, both bad for catalyst synergy
         "bornite": 0.04,
         "copper_sulfides_equivalent": 0.12,
         "chem_interaction": 0.08,
@@ -561,18 +566,17 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_secondary_copper_sulfides": 0.28,
         "grouped_copper_oxides": 0.28,
         "grouped_mixed_copper_ores": 0.12,
-        "grouped_fe_oxides": -0.04,
+        "grouped_fe_oxides": 0.06, # Cu-bearing iron oxides are fast-leaching
+        "grouped_gangue_sulfides": -0.06,        # small: competes for acid/oxidant in early stage
         "bornite": 0.22,
         "copper_sulfides_equivalent": -0.02,
         "grouped_acid_generating_sulfides": 0.00,
-        # "chem_raw": 0.08,
         "primary_passivation_drive": -0.18,
     },
 
     # ------------------------------------------------------------------
     # Oxide-dominant early inventory
     # Intended support: fit_a1 and early Amax
-    # Narrower than before
     # ------------------------------------------------------------------
     "oxide_inventory": {
         "copper_oxides_equivalent": 0.76,
@@ -585,6 +589,8 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_mixed_copper_ores": 0.12,
         "grouped_secondary_copper_sulfides": 0.04,
         "grouped_primary_copper_sulfides": -0.08,
+        # grouped_gangue_sulfides: omitted — no mechanistic link to oxide inventory
+        "grouped_fe_oxides": 0.10, # fe_oxides_cu and limonite-cu are Cu oxide sources
     },
 
     # ------------------------------------------------------------------
@@ -594,7 +600,9 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     "acid_buffer_strength": {
         "grouped_carbonates": 0.86,
         "grouped_gangue_silicates": 0.28,
-        "grouped_fe_oxides": 0.10,
+        "grouped_fe_oxides": 0.14, # Goethite/limonite acid consumption underweighted
+        "grouped_gangue_sulfides": 0.04,         # weak: ZnS + H₂SO₄ consumes some acid,
+                                                 # much weaker than carbonates/silicates
         "acid_soluble_%": -0.16,
         "copper_oxides_equivalent": -0.14,
         "grouped_copper_oxides": -0.10,
@@ -619,6 +627,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_p80_in": -0.08,
         "apparent_bulk_density_t_m3": 0.06,
         "material_size_to_column_diameter_ratio": 0.04,
+        # grouped_gangue_sulfides: omitted — gangue sulfides don't meaningfully decay acid burden
     },
 
     # ------------------------------------------------------------------
@@ -640,8 +649,10 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_primary_copper_sulfides": 0.08,
         "grouped_secondary_copper_sulfides": -0.08,
         "grouped_acid_generating_sulfides": 0.08,
+        "grouped_gangue_sulfides": 0.18,         # galena → insoluble PbSO₄ precipitates in pores,
+                                                 # physically blocking solution transport
         "grouped_fe_oxides": 0.08,
-        "grouped_carbonates": 0.14,
+        "grouped_carbonates": 0.20, # Gypsum (CaSO₄) precipitation is a real pore-plugging mechanism
         "bornite": -0.02,
         "fast_leach_inventory": -0.14,
         "oxide_inventory": -0.08,
@@ -662,8 +673,10 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_secondary_copper_sulfides": 0.14,
         "grouped_copper_oxides": 0.12,
         "grouped_acid_generating_sulfides": 0.08,
+        "grouped_gangue_sulfides": -0.12,        # PbSO₄ coatings and S⁰ deposition reduce
+                                                 # accessible surface; pore plugging limits refresh
         "grouped_gangue_silicates": -0.10,
-        "grouped_carbonates": -0.08,
+        "grouped_carbonates": -0.14, # Gypsum surface coatings more impactful than currently weighted
         "grouped_fe_oxides": -0.08,
         "apparent_bulk_density_t_m3": -0.18,
         "material_size_to_column_diameter_ratio": -0.30,
@@ -679,9 +692,10 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     # Intended support: fit_a2 and fit_b2
     # ------------------------------------------------------------------
     "ore_decay_strength": {
-        # "chem_raw": 0.06,
         "residual_cpy_%": 0.24,
         "copper_primary_sulfides_equivalent": 0.24,
+        "grouped_gangue_sulfides": 0.14,         # sustained Fe³⁺ competition throughout the leach
+                                                 # worsens late recovery — the tail gets harder
         "grouped_gangue_silicates": 0.10,
         "grouped_carbonates": 0.10,
         "grouped_acid_generating_sulfides": 0.00,
@@ -707,10 +721,14 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "copper_secondary_sulfides_equivalent": -0.08,
         "copper_oxides_equivalent": -0.12,
         "cyanide_soluble_%": -0.08,
+        "grouped_gangue_sulfides": 0.10,         # PbSO₄ + S⁰ deposition from gangue sulfide
+                                                 # oxidation adds a physical passivation burden;
+                                                 # distinct from but additive to CuFeS₂ passivation
         "grouped_gangue_silicates": 0.10,
         "grouped_fe_oxides": 0.10,
         "grouped_carbonates": 0.18,
         "grouped_acid_generating_sulfides": -0.06,
+        "grouped_phosphate_minerals": -0.06, # phosphate coatings on mineral surfaces act similarly to sulfur-rich layers
         "fe:cu": 0.10,
         "bornite": -0.08,
         "primary_passivation_drive": 0.58,
@@ -732,8 +750,12 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "cyanide_soluble_%": -0.04,
         "material_size_p80_in": -0.18,
         "grouped_acid_generating_sulfides": 0.18,
+        "grouped_gangue_sulfides": -0.16,        # catalyst cannot address PbSO₄ or ZnS Fe³⁺
+                                                 # consumption; gangue sulfides reduce the
+                                                 # "headroom" available to catalyst depassivation
         "grouped_gangue_silicates": -0.12,
         "grouped_carbonates": -0.18,
+        "grouped_phosphate_minerals": -0.10, # Apatite and similar tie up Fe²⁺ and release acidity, both bad for depassivation
         "bornite": 0.06,
         "fe:cu": 0.10,
         "primary_passivation_drive": 0.18,
@@ -749,10 +771,8 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     # ------------------------------------------------------------------
     # Transitional / mixed-ore conversion latent
     # Intended support: mild fit_a2 / fit_b2 assistance
-    # Reduced overlap: no longer another chem_raw
     # ------------------------------------------------------------------
     "transform_strength": {
-        # "chem_raw": 0.04,
         "residual_cpy_%": 0.08,
         "copper_primary_sulfides_equivalent": 0.10,
         "copper_secondary_sulfides_equivalent": 0.10,
@@ -762,6 +782,8 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_p80_in": -0.14,
         "grouped_mixed_copper_ores": 0.18,
         "grouped_acid_generating_sulfides": 0.10,
+        # grouped_gangue_sulfides: omitted — no clear transformation pathway,
+        # gangue sulfides don't convert to accessible copper
         "grouped_gangue_silicates": -0.08,
         "grouped_carbonates": -0.12,
         "bornite": 0.12,
@@ -786,16 +808,16 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_p80_in": 0.74,
         "apparent_bulk_density_t_m3": 0.24,
         "material_size_to_column_diameter_ratio": 0.30,
-
         "fe:cu": 0.10,
         "cu:fe": -0.08,
         "grouped_acid_generating_sulfides": -0.06,
+        "grouped_gangue_sulfides": 0.08,         # PbSO₄ buildup gradually reduces permeability,
+                                                 # increasing effective residence time
         "grouped_fe_oxides": 0.06,
         "grouped_carbonates": 0.16,
         "copper_primary_sulfides_equivalent": 0.18,
         "copper_secondary_sulfides_equivalent": -0.10,
         "copper_oxides_equivalent": -0.16,
-
         "chem_interaction": -0.10,
         "ferric_synergy": -0.12,
         "primary_catalyst_synergy": -0.08,
@@ -817,16 +839,16 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_p80_in": 0.66,
         "apparent_bulk_density_t_m3": 0.20,
         "material_size_to_column_diameter_ratio": 0.28,
-
         "fe:cu": 0.10,
         "cu:fe": -0.06,
         "grouped_acid_generating_sulfides": -0.04,
+        "grouped_gangue_sulfides": 0.06,         # same PbSO₄ transport delay, slightly weaker
+                                                 # because temp_days is a secondary timing term
         "grouped_fe_oxides": 0.06,
         "grouped_carbonates": 0.14,
         "copper_primary_sulfides_equivalent": 0.16,
         "copper_secondary_sulfides_equivalent": -0.08,
         "copper_oxides_equivalent": -0.12,
-
         "chem_interaction": -0.08,
         "ferric_synergy": -0.10,
         "primary_catalyst_synergy": -0.06,
@@ -848,16 +870,16 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_p80_in": -0.20,
         "apparent_bulk_density_t_m3": 0.14,
         "material_size_to_column_diameter_ratio": -0.10,
-
         "fe:cu": 0.10,
         "cu:fe": -0.06,
         "grouped_acid_generating_sulfides": -0.02,
+        "grouped_gangue_sulfides": 0.06,         # progressive pore blocking shifts the tail shape
+                                                 # toward slower, more diffusion-limited character
         "grouped_fe_oxides": 0.06,
         "grouped_carbonates": 0.12,
         "copper_primary_sulfides_equivalent": 0.16,
         "copper_secondary_sulfides_equivalent": -0.06,
         "copper_oxides_equivalent": -0.10,
-
         "chem_interaction": -0.06,
         "ferric_synergy": -0.06,
         "primary_catalyst_synergy": -0.04,
@@ -872,7 +894,6 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
     # ------------------------------------------------------------------
     # Catalyst aging / fade prior
     # Intended support: very late catalyst response only
-    # Keep modest
     # ------------------------------------------------------------------
     "aging_strength": {
         "column_height_m": 0.46,
@@ -880,23 +901,21 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "material_size_to_column_diameter_ratio": 0.20,
         "apparent_bulk_density_t_m3": 0.18,
         "material_size_p80_in": 0.08,
-
+        "grouped_gangue_sulfides": 0.08,         # sustained Fe³⁺ consumption makes catalyst appear
+                                                 # to "age out" faster — less free ferric means the
+                                                 # catalyst effect weakens sooner in practical terms
         "ferric_synergy": 0.22,
         "chem_interaction": 0.12,
         "primary_passivation_drive": 0.20,
         "passivation_strength": 0.16,
         "ore_decay_strength": 0.16,
-
         "primary_catalyst_synergy": 0.16,
         "depassivation_strength": -0.06,
         "surface_refresh": -0.08,
-
         "diffusion_drag_strength": 0.22,
-
         "acid_buffer_strength": -0.10,
         "grouped_carbonates": -0.08,
         "grouped_gangue_silicates": -0.06,
-
         "fast_leach_inventory": -0.18,
         "oxide_inventory": -0.12,
     },

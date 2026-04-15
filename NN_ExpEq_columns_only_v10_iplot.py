@@ -391,14 +391,14 @@ GROUPED_INPUT_CAPTIONS: Dict[str, str] = {
     "grouped_carbonates": "calcite, dolomite, siderite, etc.",
     "grouped_acid_generating_sulfides": "pyrite, molybdenite.",
     "grouped_gangue_sulfides": "sphaletire, galena, other sulfides.",
-    "grouped_accessory_minerals": "apatite, zircon, barite, rutile, ilmenite, monzonite, etc.",
+    # "grouped_accessory_minerals": "apatite, zircon, barite, rutile, ilmenite, monzonite, etc.",
+    "grouped_phosphate_minerals": "apatite, monazite, svanbergite, etc.",
 }
 STRICTLY_POSITIVE_MIN_COLUMNS = {
     CU_INPUT_COL,
     FE_INPUT_COL,
     "column_inner_diameter_m",
 }
-
 
 def ordered_unique(values: List[str]) -> List[str]:
     seen = set()

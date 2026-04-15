@@ -367,6 +367,8 @@ import unicodedata
 import re
 
 def normalize_and_replace(string, chars_to_keep=r'[^a-z0-9_+\-%#\(\)]', replace_nan_unnamed=True, remove_numbers=False):
+    if not isinstance(string, str):
+        return string  # pass through NaN / non-string values unchanged
     normalized_string = unicodedata.normalize('NFKD', string)
     lowercase_string = normalized_string.lower()
     if replace_nan_unnamed:

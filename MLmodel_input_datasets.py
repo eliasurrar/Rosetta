@@ -137,6 +137,7 @@ predictors_dict = { # {control_effect, catalyzed_effect, 1model_effect, name}
     # 'grouped_accessory_misc': [0, 0, 0, 'Accessory Misc (%)'],
     'grouped_carbonates': [0, 0, 0, 'Carbonates (%)'],
     'grouped_accessory_minerals': [0, 0, 0, 'Accessory Minerals (%)'],
+    'grouped_phosphate_minerals': [0, 0, 0, 'Phosphate Minerals (%)'],
     # 'grouped_others_not_grouped': [0, 0, 0, 'Others not grouped (%)'],
     # 'mineralogy_pca_1': [0, 0, 0, 'Mineralogy PCA1'],
     # 'mineralogy_pca_2': [0, 0, 0, 'Mineralogy PCA2'],
@@ -986,7 +987,13 @@ def preprocess_data(df):
     for c in df.columns:
         if c not in cols_can_have_zeros and c not in id_cols:
             df[c] = df[c].replace(0, np.nan)
+    # Save id_cols before dropna — they must never be dropped even if sparse
+    id_cols_present = [c for c in id_cols if c in df.columns]
+    saved_id_data = df[id_cols_present].copy()
     df = df.dropna(thresh=int(len(df.columns) * min_thresh), axis=1)
+    for col in id_cols_present:
+        if col not in df.columns:
+            df[col] = saved_id_data[col]
     if time_feature[0] in df.columns:
         for cf in [x for x in cols_to_ffill if x in df.columns]:
             df[cf] = df.groupby(id_cols, group_keys=False).apply(
@@ -995,9 +1002,15 @@ def preprocess_data(df):
                              limit_area='inside', limit=30)
             )
     df = df[df[y_result[0]] > 0.0]
-    df = df.groupby(id_cols, group_keys=False).apply(
-        lambda group: group[group[y_result[0]].diff().gt(0)]
-    )
+    # Keep only rows where y_result is strictly increasing within each group.
+    # Avoid groupby().apply() returning a DataFrame — pandas 2.x may absorb
+    # the groupby keys into a MultiIndex, silently removing them from columns.
+    id_cols_in_df = [c for c in id_cols if c in df.columns]
+    if id_cols_in_df:
+        diff_mask = df.groupby(id_cols_in_df, sort=False)[y_result[0]].diff().gt(0)
+    else:
+        diff_mask = df[y_result[0]].diff().gt(0)
+    df = df[diff_mask].reset_index(drop=True)
     # df = df[id_cols + categorical_feats + numerical_features]
     # df = df.dropna(axis=0, how='any')
     return df

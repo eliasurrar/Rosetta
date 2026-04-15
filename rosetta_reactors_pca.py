@@ -131,13 +131,16 @@ df_reactors = pd.read_csv(folder_path_load + '/3_dataframes_from_csv/dataset_rea
 # df_reactors['count_unique'].unique().size
 # line added because they change column names
 df_reactors['time_(day)'] = df_reactors['time_(day)'].fillna(df_reactors['time_(days)'])
-df_reactors.iloc[:, 5:] = df_reactors.iloc[:, 5:].apply(pd.to_numeric, errors='coerce')
+for col in df_reactors.columns[5:]:
+    df_reactors[col] = pd.to_numeric(df_reactors[col], errors='coerce')
 
 df_bottles = pd.read_csv(folder_path_load + '/3_dataframes_from_csv/dataset_rolling_bottles_detailed.csv')
-df_bottles.iloc[:, 5:] = df_bottles.iloc[:, 5:].apply(pd.to_numeric, errors='coerce')
+for col in df_bottles.columns[5:]:
+    df_bottles[col] = pd.to_numeric(df_bottles[col], errors='coerce')
 
 df_reactors_terminated = pd.read_excel('/Users/administration/Library/CloudStorage/OneDrive-JettiResources/Reporting/db_python/dataset_reactor_summary_detailed_terminated_projects.xlsx')
-df_reactors_terminated.iloc[:, 5:] = df_reactors_terminated.iloc[:, 5:].apply(pd.to_numeric, errors='coerce')
+for col in df_reactors_terminated.columns[5:]:
+    df_reactors_terminated[col] = pd.to_numeric(df_reactors_terminated[col], errors='coerce')
 
 # merge with terminated
 df_reactors = pd.concat([df_reactors, df_reactors_terminated], axis=0)
@@ -248,6 +251,7 @@ df_pivot[df_pivot.index == ('026 Jetti Project File', 'tbl-RT_1')]
 #%%
 # Function to fill missing values using bins with linear interpolation and extrapolation
 def fill_with_bins(row, times, bin_size=5, cap_value=99.5, slope_decay=0.99):
+    row = np.array(row, dtype=float)  # ensure a writable float array (Arrow arrays are read-only)
     # Ensure the first value is 0 if the first column name is 0
     if times[0] == 0:
         row[0] = 0
