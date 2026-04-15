@@ -138,8 +138,10 @@ TARGET_COLUMNS = "cu_recovery_%"
 STATUS_COL_PRIMARY = "project_col_id"
 STATUS_COL_FALLBACK = "catalyst_status"
 PAIR_ID_COL = "project_sample_id"
+PROJECT_NAME_COL = "project_name"
 CATALYST_CUM_COL = "cumulative_catalyst_addition_kg_t"
 LIXIVIANT_CUM_COL = "cumulative_lixiviant_m3_t"
+ORP_PROFILE_COL = "feed_orp_mv_ag_agcl"
 FEED_MASS_COL = "feed_mass_kg"
 EXCLUDED_TRAIN_PAIR_IDS = {
     # "006_jetti_project_file_pvo",
@@ -320,6 +322,7 @@ CONFIG = {
         "control_early_process": 0.25,
         "tau_onset": 0.50,
         "single_uplift_late_accel": 0.15,
+        "ferric_orp_aux": 0.05,
     },
     "plot_dpi": 300,
     "ensemble_pi_low": 10,
@@ -339,12 +342,22 @@ CONFIG = {
     "cap_p80_penalty_p_inf": 0.4,
     "cap_p80_penalty_n": 2.0,
     "catalyst_extension_window_days": 50.0,
+    "orp_aux_recent_window_days": 200.0,
+    "orp_aux_window_start_day": 150.0,
+    "orp_aux_window_end_day": 400.0,
+    "orp_aux_trim_quantile": 0.10,
+    "orp_aux_summary_step_days": 1.0,
+    "orp_aux_min_recent_points": 3,
+    "orp_aux_min_target_points": 5,
+    "orp_aux_project_min_pairs": 2,
+    "orp_aux_norm_floor_mv": 10.0,
+    "orp_aux_source": "control",   # "control", "catalyzed", or "average"
     "ensemble_interval_smoothing_days": 140.0,
     "min_residual_primary_uplift_factor": 0.20,
     "residual_primary_uplift_softness_power": 0.50,
 }
 
-MODEL_LOGIC_VERSION = "v10_control_focus_20260414"
+MODEL_LOGIC_VERSION = "v10_control_focus_orp_aux_20260414"
 
 PREFIT_OUTPUT_COLUMNS = [
     "row_index",
@@ -408,7 +421,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "bornite": 0.10,
         "fe:cu": -0.10,
         "cu:fe": 0.06,
-        "copper_primary_sulfides_equivalent": 0.02,
+        "copper_primary_sulfides_equivalent": 0.10,
         "copper_secondary_sulfides_equivalent": 0.18,
         "copper_sulfides_equivalent": 0.06,
         "copper_oxides_equivalent": 0.22,
@@ -435,7 +448,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "fe:cu": 0.16,
         "cu:fe": -0.10,
         "material_size_p80_in": 0.22,
-        "grouped_acid_generating_sulfides": -0.06,
+        "grouped_acid_generating_sulfides": 0.08,
         "grouped_gangue_silicates": 0.14,
         "grouped_fe_oxides": 0.08,
         "grouped_carbonates": 0.12,
@@ -525,7 +538,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_gangue_silicates": -0.10,
         "grouped_fe_oxides": 0.02,
         "grouped_carbonates": -0.16,
-        "bornite": 0.12,
+        "bornite": 0.04,
         "copper_sulfides_equivalent": 0.12,
         "chem_interaction": 0.08,
         "primary_passivation_drive": 0.32,
@@ -551,7 +564,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_fe_oxides": -0.04,
         "bornite": 0.22,
         "copper_sulfides_equivalent": -0.02,
-        "grouped_acid_generating_sulfides": 0.06,
+        "grouped_acid_generating_sulfides": 0.00,
         # "chem_raw": 0.08,
         "primary_passivation_drive": -0.18,
     },
@@ -721,7 +734,7 @@ LATENT_INTERACTION_SPECS: Dict[str, Dict[str, float]] = {
         "grouped_acid_generating_sulfides": 0.18,
         "grouped_gangue_silicates": -0.12,
         "grouped_carbonates": -0.18,
-        "bornite": 0.18,
+        "bornite": 0.06,
         "fe:cu": 0.10,
         "primary_passivation_drive": 0.18,
         "ferric_synergy": 0.24,
@@ -1279,6 +1292,117 @@ def prepare_cumulative_profile_with_time(
     for i, j in enumerate(inv):
         c_unique[j] = c[i] if not np.isfinite(c_unique[j]) else max(c_unique[j], c[i])
     return t_unique.astype(float), clean_cumulative_profile(c_unique, force_zero=force_zero)
+
+
+def prepare_observed_profile_with_time(
+    time_days: np.ndarray,
+    observed_profile: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    t = np.asarray(time_days, dtype=float)
+    y = np.asarray(observed_profile, dtype=float)
+    n = min(t.size, y.size)
+    if n <= 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+
+    t = t[:n]
+    y = y[:n]
+    valid = np.isfinite(t) & np.isfinite(y)
+    if valid.sum() == 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+
+    t = t[valid]
+    y = y[valid]
+    order = np.argsort(t)
+    t = t[order]
+    y = y[order]
+
+    t_unique, inv = np.unique(t, return_inverse=True)
+    y_sum = np.zeros(t_unique.shape, dtype=float)
+    y_count = np.zeros(t_unique.shape, dtype=float)
+    for i, j in enumerate(inv):
+        y_sum[j] += float(y[i])
+        y_count[j] += 1.0
+    y_unique = np.divide(y_sum, np.maximum(y_count, 1.0), dtype=float)
+    return t_unique.astype(float), y_unique.astype(float)
+
+
+def trimmed_mean(values: np.ndarray, trim_quantile: float = 0.10) -> float:
+    arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.nan
+    if finite.size <= 2:
+        return float(np.mean(finite))
+
+    q = float(np.clip(trim_quantile, 0.0, 0.49))
+    if q <= 0.0:
+        return float(np.mean(finite))
+
+    lo = float(np.nanquantile(finite, q))
+    hi = float(np.nanquantile(finite, 1.0 - q))
+    trimmed = finite[(finite >= lo) & (finite <= hi)]
+    if trimmed.size == 0:
+        trimmed = finite
+    return float(np.mean(trimmed))
+
+
+def compute_orp_aux_target_from_profile(
+    time_days: np.ndarray,
+    orp_profile: np.ndarray,
+    window_start_day: float,
+    window_end_day: float,
+    history_window_days: float,
+    trim_quantile: float = 0.10,
+    step_days: float = 1.0,
+    min_recent_points: int = 3,
+    min_target_points: int = 5,
+) -> float:
+    t_obs, orp_obs = prepare_observed_profile_with_time(time_days, orp_profile)
+    if t_obs.size == 0 or orp_obs.size == 0:
+        return np.nan
+
+    target_start = float(window_start_day)
+    target_end = float(max(window_end_day, target_start))
+    last_day = float(t_obs[-1])
+    recent_start = max(float(t_obs[0]), last_day - float(history_window_days))
+    recent_mask = t_obs >= recent_start - 1e-9
+    recent_vals = orp_obs[recent_mask]
+    if recent_vals.size < int(max(1, min_recent_points)):
+        return np.nan
+
+    plateau_level = trimmed_mean(recent_vals, trim_quantile=trim_quantile)
+    if not np.isfinite(plateau_level):
+        return np.nan
+
+    ext_t = np.asarray(t_obs, dtype=float)
+    ext_y = np.asarray(orp_obs, dtype=float)
+    if last_day < target_end - 1e-9:
+        future_time_days = build_plot_time_grid(
+            observed_time_days=np.asarray([last_day, target_end], dtype=float),
+            start_day=last_day,
+            target_day=target_end,
+            step_days=float(step_days),
+        )
+        future_time_days = future_time_days[future_time_days > last_day + 1e-9]
+        if future_time_days.size > 0:
+            ext_t = np.concatenate([ext_t, future_time_days])
+            ext_y = np.concatenate([ext_y, np.full(future_time_days.shape, plateau_level, dtype=float)])
+
+    summary_start = max(target_start, float(ext_t[0]))
+    if target_end <= summary_start + 1e-9:
+        return np.nan
+
+    query_time_days = build_plot_time_grid(
+        observed_time_days=ext_t,
+        start_day=summary_start,
+        target_day=target_end,
+        step_days=float(step_days),
+    )
+    if query_time_days.size < int(max(1, min_target_points)):
+        return np.nan
+
+    query_orp = np.interp(query_time_days, ext_t, ext_y)
+    return trimmed_mean(query_orp, trim_quantile=trim_quantile)
 
 
 def average_weekly_cumulative_from_recent_history(
@@ -2949,6 +3073,7 @@ def augment_pair_with_virtual_data(
     # Create new pair with augmented data
     new_pair = PairSample(
         sample_id=pair.sample_id,
+        project_name=pair.project_name,
         static_raw=pair.static_raw,
         input_only_raw=pair.input_only_raw,
         control=pair.control,
@@ -2957,6 +3082,9 @@ def augment_pair_with_virtual_data(
         static_imputed=pair.static_imputed,
         ctrl_cap=pair.ctrl_cap,
         cat_cap=pair.cat_cap,
+        orp_aux_target_raw=pair.orp_aux_target_raw,
+        orp_aux_target_norm=pair.orp_aux_target_norm,
+        orp_aux_mask=pair.orp_aux_mask,
     )
     
     # Augment Control if criteria met
@@ -3030,6 +3158,7 @@ class CurveData:
 @dataclass
 class PairSample:
     sample_id: str
+    project_name: str
     static_raw: np.ndarray
     input_only_raw: np.ndarray
     control: CurveData
@@ -3040,6 +3169,9 @@ class PairSample:
     # ctrl_cap applies to the control curve; cat_cap to the catalyzed curve.
     ctrl_cap: float = np.nan
     cat_cap: float = np.nan
+    orp_aux_target_raw: float = np.nan
+    orp_aux_target_norm: float = np.nan
+    orp_aux_mask: float = 0.0
     _tensor_cache: Dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
     _profile_cache: Dict[Any, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -3210,6 +3342,8 @@ def get_pair_training_tensors(
             device=device,
         ),
         "ctrl_true_on_cat_t": torch.as_tensor(np.asarray(ctrl_true_on_cat_t, dtype=np.float32), dtype=dtype, device=device),
+        "orp_aux_target": torch.as_tensor(float(pair.orp_aux_target_norm), dtype=dtype, device=device),
+        "orp_aux_mask": torch.as_tensor(float(pair.orp_aux_mask), dtype=dtype, device=device),
     }
     bundle["cat_ctrl_c"] = torch.zeros_like(bundle["cat_c"])
     pair._tensor_cache[cache_key] = bundle
@@ -3341,7 +3475,7 @@ def analyze_dataset(df: pd.DataFrame) -> Dict[str, Any]:
     summary["missing_counts_input_only"] = input_only_missing
 
     dynamic_stats = {}
-    for col in [TIME_COL_COLUMNS, CATALYST_CUM_COL, LIXIVIANT_CUM_COL, TARGET_COLUMNS]:
+    for col in [TIME_COL_COLUMNS, CATALYST_CUM_COL, LIXIVIANT_CUM_COL, TARGET_COLUMNS, ORP_PROFILE_COL]:
         if col not in df.columns:
             continue
         lengths = []
@@ -3561,10 +3695,17 @@ def prepare_prefit_dataframe(df: pd.DataFrame, prefit_out_path: str) -> pd.DataF
 def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
     pairs: List[PairSample] = []
     grouped = df.groupby(PAIR_ID_COL, dropna=False)
+    orp_window_start_day = float(CONFIG.get("orp_aux_window_start_day", 150.0))
+    orp_window_end_day = float(CONFIG.get("orp_aux_window_end_day", 400.0))
+    orp_trim_quantile = float(CONFIG.get("orp_aux_trim_quantile", 0.10))
+    orp_step_days = float(CONFIG.get("orp_aux_summary_step_days", 1.0))
+    orp_history_window_days = float(CONFIG.get("orp_aux_recent_window_days", 21.0))
+    orp_min_recent_points = int(CONFIG.get("orp_aux_min_recent_points", 3))
+    orp_min_target_points = int(CONFIG.get("orp_aux_min_target_points", 5))
     for sample_id, group in grouped:
         if pd.isna(sample_id):
             continue
-        by_status: Dict[str, Tuple[CurveData, np.ndarray, np.ndarray]] = {}
+        by_status: Dict[str, Tuple[CurveData, np.ndarray, np.ndarray, str, float]] = {}
         for idx, row in group.iterrows():
             status = normalize_status(row.get(STATUS_COL_PRIMARY, row.get(STATUS_COL_FALLBACK, "")))
             t_raw = parse_listlike(row.get(TIME_COL_COLUMNS, np.nan))
@@ -3629,6 +3770,18 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
                 INPUT_ONLY_COLUMNS,
                 f"sample_id={sample_id} row_index={idx} input-only predictors",
             )
+            project_name = str(row.get(PROJECT_NAME_COL, sample_id)).strip()
+            orp_aux_target_raw = compute_orp_aux_target_from_profile(
+                time_days=t_raw,
+                orp_profile=parse_listlike(row.get(ORP_PROFILE_COL, np.nan)),
+                window_start_day=orp_window_start_day,
+                window_end_day=orp_window_end_day,
+                history_window_days=orp_history_window_days,
+                trim_quantile=orp_trim_quantile,
+                step_days=orp_step_days,
+                min_recent_points=orp_min_recent_points,
+                min_target_points=orp_min_target_points,
+            )
 
             curve_data = CurveData(
                 status=status,
@@ -3644,12 +3797,12 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
                 row_index=int(idx),
             )
             if status not in by_status or curve_data.time.size > by_status[status][0].time.size:
-                by_status[status] = (curve_data, static_vec, input_only_vec)
+                by_status[status] = (curve_data, static_vec, input_only_vec, project_name, orp_aux_target_raw)
 
         if "Control" not in by_status or "Catalyzed" not in by_status:
             continue
-        ctrl_curve, ctrl_static, ctrl_input_only = by_status["Control"]
-        cat_curve, cat_static, cat_input_only = by_status["Catalyzed"]
+        ctrl_curve, ctrl_static, ctrl_input_only, ctrl_project_name, ctrl_orp_aux_target_raw = by_status["Control"]
+        cat_curve, cat_static, cat_input_only, cat_project_name, cat_orp_aux_target_raw = by_status["Catalyzed"]
         merged_static = combine_static_vectors(
             ctrl_static,
             cat_static,
@@ -3675,15 +3828,42 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
             cu_primary_equiv=_sv("copper_primary_sulfides_equivalent"),
             material_size_p80_in=_sv("material_size_p80_in"),
         )
+        pair_project_name = cat_project_name or ctrl_project_name or str(sample_id)
+        _orp_source = str(CONFIG.get("orp_aux_source", "control")).strip().lower()
+        _ctrl_ok = np.isfinite(ctrl_orp_aux_target_raw)
+        _cat_ok = np.isfinite(cat_orp_aux_target_raw)
+        if _orp_source == "catalyzed":
+            pair_orp_aux_target_raw = (
+                float(cat_orp_aux_target_raw) if _cat_ok
+                else float(ctrl_orp_aux_target_raw) if _ctrl_ok
+                else np.nan
+            )
+        elif _orp_source == "average":
+            if _ctrl_ok and _cat_ok:
+                pair_orp_aux_target_raw = 0.5 * (float(ctrl_orp_aux_target_raw) + float(cat_orp_aux_target_raw))
+            elif _ctrl_ok:
+                pair_orp_aux_target_raw = float(ctrl_orp_aux_target_raw)
+            elif _cat_ok:
+                pair_orp_aux_target_raw = float(cat_orp_aux_target_raw)
+            else:
+                pair_orp_aux_target_raw = np.nan
+        else:  # default: "control"
+            pair_orp_aux_target_raw = (
+                float(ctrl_orp_aux_target_raw) if _ctrl_ok
+                else float(cat_orp_aux_target_raw) if _cat_ok
+                else np.nan
+            )
         pairs.append(
             PairSample(
                 sample_id=str(sample_id),
+                project_name=str(pair_project_name),
                 static_raw=merged_static,
                 input_only_raw=merged_input_only,
                 control=ctrl_curve,
                 catalyzed=cat_curve,
                 ctrl_cap=pair_ctrl_cap,
                 cat_cap=pair_cat_cap,
+                orp_aux_target_raw=pair_orp_aux_target_raw,
             )
         )
     pairs = sorted(pairs, key=lambda x: x.sample_id)
@@ -3733,6 +3913,70 @@ def apply_static_transformers(
         p.static_imputed = np.asarray(xi, dtype=float)
         p.static_scaled = np.asarray(xs, dtype=float)
         p.clear_tensor_cache()
+
+
+def fit_orp_aux_normalization(train_pairs: List[PairSample]) -> Dict[str, Any]:
+    values_by_project: Dict[str, List[float]] = {}
+    all_values: List[float] = []
+    for pair in train_pairs:
+        value = float(pair.orp_aux_target_raw)
+        if not np.isfinite(value):
+            continue
+        project_name = str(pair.project_name).strip() or str(pair.sample_id)
+        values_by_project.setdefault(project_name, []).append(value)
+        all_values.append(value)
+
+    floor_mv = float(CONFIG.get("orp_aux_norm_floor_mv", 10.0))
+    if len(all_values) == 0:
+        return {
+            "global_mean": 0.0,
+            "global_std": 1.0,
+            "project_stats": {},
+        }
+
+    all_arr = np.asarray(all_values, dtype=float)
+    global_mean = float(np.mean(all_arr))
+    global_std = float(max(np.std(all_arr), floor_mv))
+    min_project_pairs = int(max(1, CONFIG.get("orp_aux_project_min_pairs", 2)))
+
+    project_stats: Dict[str, Dict[str, float]] = {}
+    for project_name, values in values_by_project.items():
+        values_arr = np.asarray(values, dtype=float)
+        if values_arr.size < min_project_pairs:
+            continue
+        project_stats[project_name] = {
+            "mean": float(np.mean(values_arr)),
+            "std": float(max(np.std(values_arr), floor_mv)),
+        }
+
+    return {
+        "global_mean": global_mean,
+        "global_std": global_std,
+        "project_stats": project_stats,
+    }
+
+
+def apply_orp_aux_normalization(
+    pairs: List[PairSample],
+    norm_stats: Dict[str, Any],
+) -> None:
+    project_stats = dict(norm_stats.get("project_stats", {}))
+    global_mean = float(norm_stats.get("global_mean", 0.0))
+    global_std = float(max(norm_stats.get("global_std", 1.0), 1e-6))
+
+    for pair in pairs:
+        raw_target = float(pair.orp_aux_target_raw)
+        if np.isfinite(raw_target):
+            project_name = str(pair.project_name).strip() or str(pair.sample_id)
+            stats = project_stats.get(project_name)
+            mean = float(stats["mean"]) if stats is not None else global_mean
+            std = float(max(stats["std"], 1e-6)) if stats is not None else global_std
+            pair.orp_aux_target_norm = float((raw_target - mean) / std)
+            pair.orp_aux_mask = 1.0
+        else:
+            pair.orp_aux_target_norm = np.nan
+            pair.orp_aux_mask = 0.0
+        pair.clear_tensor_cache()
 
 
 def build_repeated_kfold_member_splits(
@@ -3860,6 +4104,8 @@ class PairCurveNet(nn.Module):
         self.ferric_synergy_head = nn.Linear(hidden_dim, 1)
         self.primary_catalyst_synergy_head = nn.Linear(hidden_dim, 1)
         self.surface_refresh_head = nn.Linear(hidden_dim, 1)
+        self.orp_aux_scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+        self.orp_aux_bias = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
 
         self.geo_idx = list(geo_idx)
         self.geo_delay_head = nn.Linear(len(self.geo_idx), 1) if len(self.geo_idx) > 0 else None
@@ -3901,6 +4147,10 @@ class PairCurveNet(nn.Module):
     def _bounded_transition_days(self, raw: torch.Tensor) -> torch.Tensor:
         span = self.max_transition_days - self.min_transition_days
         return self.min_transition_days + span * torch.sigmoid(raw)
+
+    def predict_orp_aux_target(self, ferric_synergy: torch.Tensor) -> torch.Tensor:
+        ferric = torch.as_tensor(ferric_synergy)
+        return self.orp_aux_scale * (ferric - 1.0) + self.orp_aux_bias
 
     @staticmethod
     def _feature_column(x_static: torch.Tensor, idx: Optional[int]) -> torch.Tensor:
@@ -4016,6 +4266,7 @@ class PairCurveNet(nn.Module):
         depassivation_strength: torch.Tensor,
         fast_leach_inventory: torch.Tensor,
         oxide_inventory: torch.Tensor,
+        ferric_synergy: torch.Tensor,
     ) -> torch.Tensor:
         """
         Build catalyzed parameters as a constrained modification of control params.
@@ -4039,9 +4290,10 @@ class PairCurveNet(nn.Module):
 
         # Tail-unlocking catalyst benefit should be strongest in primary/passivating ores.
         tail_unlock = torch.clamp(
-            0.55 * primary_catalyst_synergy
-            + 0.45 * depassivation_strength,
-            min=0.25,
+            0.45 * primary_catalyst_synergy
+            + 0.35 * depassivation_strength
+            + 0.20 * ferric_synergy,
+            min=0.05,
             max=2.00,
         )
 
@@ -4744,16 +4996,6 @@ class PairCurveNet(nn.Module):
         primary_passivation_drive = torch.sigmoid(primary_drive_raw)
         interaction_terms["primary_passivation_drive"] = primary_passivation_drive
 
-        ferric_synergy = 0.50 + torch.sigmoid(
-            self._apply_learnable_interactions(
-                self.ferric_synergy_head(h),
-                "ferric_synergy",
-                interaction_terms,
-            )
-        )
-        interaction_terms["ferric_synergy"] = ferric_synergy
-
-
         chem_interaction = 0.35 + 0.75 * torch.sigmoid(
             self._apply_learnable_interactions(
                 self.chem_mix_head(h),
@@ -4889,6 +5131,7 @@ class PairCurveNet(nn.Module):
             depassivation_strength=depassivation_strength,
             fast_leach_inventory=fast_leach_inventory,
             oxide_inventory=oxide_inventory,
+            ferric_synergy=ferric_synergy,
         )
 
         transform_tau = self.tmax_days * torch.sigmoid(self.transform_tau_head(h))
@@ -5263,7 +5506,7 @@ class PairCurveNet(nn.Module):
             passivation_strength
             * primary_drive
             * chem_interaction
-            * ferric_synergy
+            * (2.0 - ferric_synergy)
             * ore_accessibility
             * (1.0 - 0.45 * fast_release)
             * (1.0 + 0.20 * acid_buffer_penalty),
@@ -6131,6 +6374,22 @@ def _pair_training_loss_from_tensors(
         _output_cap_penalty(pred_ctrl, tensors["ctrl_cap"])
         + _output_cap_penalty(pred_cat, tensors["cat_cap"])
     )
+    orp_aux_target = torch.as_tensor(tensors["orp_aux_target"], dtype=pred_cat.dtype, device=pred_cat.device).view(-1)
+    orp_aux_mask = torch.as_tensor(tensors["orp_aux_mask"], dtype=pred_cat.dtype, device=pred_cat.device).view(-1)
+    ferric_orp_pred = model.predict_orp_aux_target(latent["ferric_synergy"]).view(-1)
+    valid_orp_aux = (
+        (orp_aux_mask > 0.5)
+        & torch.isfinite(orp_aux_target)
+        & torch.isfinite(ferric_orp_pred)
+    )
+    if torch.any(valid_orp_aux):
+        ferric_orp_aux_pen = F.mse_loss(
+            ferric_orp_pred[valid_orp_aux],
+            orp_aux_target[valid_orp_aux],
+            reduction="mean",
+        )
+    else:
+        ferric_orp_aux_pen = torch.zeros((), dtype=pred_cat.dtype, device=pred_cat.device)
 
     total = (
         loss_ctrl
@@ -6152,6 +6411,7 @@ def _pair_training_loss_from_tensors(
         + float(loss_weights.get("control_tail_fit", 0.0)) * control_tail_fit_pen
         + float(loss_weights.get("control_early_process", 0.0)) * control_early_process_pen
         + float(loss_weights.get("tau_onset", 0.0)) * tau_onset_pen
+        + float(loss_weights.get("ferric_orp_aux", 0.0)) * ferric_orp_aux_pen
     )
     return total
 
@@ -6409,6 +6669,8 @@ def build_member_model_from_checkpoint(checkpoint: Dict[str, Any]) -> PairCurveN
                 "geometry_response_scale",
                 "temp_active_mean_scale",
                 "temp_active_recent_scale",
+                "orp_aux_scale",
+                "orp_aux_bias",
             }
             for k in load_result.missing_keys
         )
@@ -6443,6 +6705,9 @@ def train_validation_member_job(job: Dict[str, Any]) -> Dict[str, Any]:
     imputer_member, scaler_member = fit_static_transformers(train_pairs_seed)
     apply_static_transformers(train_pairs_seed, imputer_member, scaler_member)
     apply_static_transformers(val_pairs_seed, imputer_member, scaler_member)
+    orp_aux_norm_stats = fit_orp_aux_normalization(train_pairs_seed)
+    apply_orp_aux_normalization(train_pairs_seed, orp_aux_norm_stats)
+    apply_orp_aux_normalization(val_pairs_seed, orp_aux_norm_stats)
 
     ctrl_seed_params = np.vstack([p.control.fit_params for p in train_pairs_seed])
     cat_seed_params = np.vstack([p.catalyzed.fit_params for p in train_pairs_seed])
