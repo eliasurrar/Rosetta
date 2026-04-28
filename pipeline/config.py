@@ -1,0 +1,636 @@
+"""
+config.py — Single source of truth for all hardcoded mappings, IDs, filters, and paths.
+
+To change a mapping: edit it here. Every step imports from this file.
+To disable a mapping entry: comment it out here.
+"""
+
+# ==============================================================================
+# PATHS
+# ==============================================================================
+
+from pathlib import Path as _Path
+
+PATHS = {
+    "spkdata_csvs":      "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/PythonProjects/SpkData/Jetti01/3_dataframes_from_csv",
+    "spkdata_inputs":    "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/PythonProjects/SpkData/Jetti01/input_sheets",
+    "db_python":         "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/Reporting/db_python",
+    "db_python_inputs":  "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/Reporting/db_python/csv_inputs",
+    "db_python_outputs": "/Users/administration/Library/CloudStorage/OneDrive-JettiResources/Reporting/db_python/csv_outputs",
+    "powerbi":           "/Users/administration/Library/CloudStorage/OneDrive-SharedLibraries-JettiResources/Jetti Vancouver Projects - projects_database - Documents/power_bi",
+    "columns_onedrive":  "/Users/administration/Library/CloudStorage/OneDrive-SharedLibraries-JettiResources/Jetti Vancouver Projects - projects_database - Documents/columns",
+    "reactors_onedrive": "/Users/administration/Library/CloudStorage/OneDrive-SharedLibraries-JettiResources/Jetti Vancouver Projects - projects_database - Documents/reactors",
+    "user_editable_files": str(_Path(__file__).parent / "user_editable_files"),
+}
+
+# ==============================================================================
+# CORE SETTINGS
+# ==============================================================================
+ID_COLS          = ['project_name', 'project_col_id', 'project_sample_id']
+MIN_THRESH       = 0.8
+Y_RESULT         = ['cu_recovery_%']
+CATEGORICAL_FEATS = ['mineralogy_cluster']
+
+COLS_TO_FFILL = [
+    'cu_recovery_%', 'feed_flowrate_ml_min', 'feed_ph', 'feed_orp_mv_ag_agcl',
+    'cumulative_catalyst_addition_kg_t', 'cumulative_lixiviant_m3_t',
+    'irrigation_rate_l_h_m2', 'irrigation_rate_l_m2_h',
+    'raff_assay_fe_mg_l', 'raff_assay_fe_ii_mg_l', 'raff_assay_fe_iii_mg_l',
+    'pls_fe_ii_mg_l', 'pls_fe_iii_mg_l',
+    'catalyst_addition_mg_l',
+]
+
+PREDICTORS_DICT = {
+    'leach_duration_days':               [1,  1,  1,  'Leach Duration (days)'],
+    'feed_flowrate_ml_min':              [0,  0,  0,  'Air flow (ml/min)'],
+    'feed_orp_mv_ag_agcl':               [0,  0,  0,  'Feed ORP (mV)'],
+    'cumulative_catalyst_addition_kg_t': [1,  1,  1,  'Cumulative Catalyst added (kg/t)'],
+    'cumulative_lixiviant_flowthrough_l':[0,  0,  0,  'Cumulative Lixiviant (L)'],
+    'cumulative_lixiviant_m3_t':         [1,  1,  1,  'Cumulative Lixiviant (m3/t)'],
+    'cu_%':                              [1,  1,  1,  'Head Cu (%)'],
+    'acid_soluble_%':                    [1,  1,  1,  'Acid Soluble Cu (%norm)'],
+    'cyanide_soluble_%':                 [0,  0,  0,  'Cyanide Soluble (%norm)'],
+    'residual_cpy_%':                    [-1,-1, -1,  'Residual Chalcopyrite (%norm)'],
+    'cu_seq_h2so4_%':                    [0,  0,  0,  'Acid Soluble (%)'],
+    'cu_seq_nacn_%':                     [0,  0,  0,  'Cyanide Soluble (%)'],
+    'cu_seq_a_r_%':                      [0,  0,  0,  'Residual Chalcopyrite (%)'],
+    'material_size_p80_in':              [-1,-1, -1,  'Material Size P80 (in)'],
+    'feed_head_cu_%':                    [1,  1,  1,  'Head Cu (%)'],
+    'feed_head_fe_%':                    [0,  0,  0,  'Head Fe (%)'],
+    'column_height_m':                   [-1,-1, -1,  'Column Height (m)'],
+    'feed_mass_kg':                      [0,  0,  0,  'Column Feed Mass (Kg)'],
+    'irrigation_rate_l_h_m2':           [0,  0,  0,  'Irrigation Rate (L/h/m2)'],
+    'irrigation_rate_l_m2_h':           [0,  0,  0,  'Irrigation Rate (L/h/m2)'],
+    'column_inner_diameter_m':           [0,  0,  0,  'Column Inner Diameter (m)'],
+    'raff_assay_fe_ii_mg_l':            [0,  0,  0,  'Raffinate Fe(II) (mg/L)'],
+    'raff_assay_fe_iii_mg_l':           [0,  0,  0,  'Raffinate Fe(III) (mg/L)'],
+    'pls_fe_ii_mg_l':                    [0,  0,  0,  'PLS Fe(II) (mg/L)'],
+    'pls_fe_iii_mg_l':                   [0,  0,  0,  'PLS Fe(III) (mg/L)'],
+    'chlorite':                          [0,  0,  0,  'Chlorite (%)'],
+    'bornite':                           [0,  0,  0,  'Bornite (%)'],
+    'enargite':                          [0,  0,  0,  'Enargite (%)'],
+    'fe_oxides':                         [0,  0,  0,  'Fe Oxides (%)'],
+    'cus_exposed_50pct_sum':            [0,  0,  0,  'Cu-Sulphides Exposed (+50%)'],
+    'cus_locked_30pct_sum':             [0,  0,  0,  'Cu-Sulphides Locked (-30%)'],
+    # reactors_PCA1 removed — PCA dropped from pipeline
+    # reactors_PCA2 removed — PCA dropped from pipeline
+    'grouped_primary_copper_sulfides':   [1,  1,  1,  'Primary Copper Sulphides (%)'],
+    'grouped_secondary_copper_sulfides': [1,  1,  1,  'Secondary Copper Sulphides (%)'],
+    'grouped_copper_oxides':             [0,  0,  0,  'Copper Oxides (%)'],
+    'grouped_mixed_copper_ores':         [0,  0,  0,  'Mixed Copper Ores (%)'],
+    'grouped_acid_generating_sulfides':  [1,  1,  1,  'Acid Generating Sulphides (%)'],
+    'grouped_gangue_sulfides':           [0,  0,  0,  'Gangue Sulphides (%)'],
+    'grouped_gangue_silicates':          [0,  0,  0,  'Gangue Silicates (%)'],
+    'grouped_fe_oxides':                 [-1,-1, -1,  'Fe Oxides (%)'],
+    'grouped_carbonates':                [0,  0,  0,  'Carbonates (%)'],
+    'grouped_accessory_minerals':        [0,  0,  0,  'Accessory Minerals (%)'],
+    'grouped_phosphate_minerals':        [0,  0,  0,  'Phosphate Minerals (%)'],
+}
+
+# ==============================================================================
+# COL_TO_SAMPLE_ID_MAP  — project_col_id → project_sample_id
+# Consolidated from ALL replacement dicts across the codebase.
+# ==============================================================================
+COL_TO_SAMPLE_ID_MAP = {
+    # 011
+    '011_jetti_project_file_rm_1':           '011_jetti_project_file_rm',
+    '011_jetti_project_file_rm_2':           '011_jetti_project_file_rm',
+    '011_jetti_project_filecrushed_rm_5':    '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_rm_6':    '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_rm_7':    '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_rm_8':    '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_011rm_5': '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_011rm_6': '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_011rm_7': '011_jetti_project_file_rm_crushed',
+    '011_jetti_project_filecrushed_011rm_8': '011_jetti_project_file_rm_crushed',
+    # 012
+    '012_jetti_project_file_cs_i_1':         '012_jetti_project_file_incremento',
+    '012_jetti_project_file_cs_i_2':         '012_jetti_project_file_incremento',
+    '012_jetti_project_file_cs_i_3':         '012_jetti_project_file_incremento',
+    '012_jetti_project_file_cs_q_1':         '012_jetti_project_file_quebalix',
+    '012_jetti_project_file_cs_q_2':         '012_jetti_project_file_quebalix',
+    '012_jetti_project_file_cs_q_3':         '012_jetti_project_file_quebalix',
+    # 013
+    '013_jetti_project_file_o_1':            '013_jetti_project_file_combined',
+    '013_jetti_project_file_o_2':            '013_jetti_project_file_combined',
+    '013_jetti_project_file_o_3':            '013_jetti_project_file_combined',
+    '013_jetti_project_file_o_4':            '013_jetti_project_file_combined',
+    # 014
+    '014_jetti_project_file_b_1':            '014_jetti_project_file_bag',
+    '014_jetti_project_file_b_2':            '014_jetti_project_file_bag',
+    '014_jetti_project_file_b_3':            '014_jetti_project_file_bag',
+    '014_jetti_project_file_b_4':            '014_jetti_project_file_bag',
+    '014_jetti_project_file_k_1':            '014_jetti_project_file_kmb',
+    '014_jetti_project_file_k_2':            '014_jetti_project_file_kmb',
+    '014_jetti_project_file_k_3':            '014_jetti_project_file_kmb',
+    '014_jetti_project_file_k_4':            '014_jetti_project_file_kmb',
+    # 015
+    '015_jetti_project_file_c_1':            '015_jetti_project_file_amcf',
+    '015_jetti_project_file_c_2':            '015_jetti_project_file_amcf',
+    '015_jetti_project_file_c_6':            '015_jetti_project_file_amcf',
+    '015_jetti_project_file_c_7':            '015_jetti_project_file_amcf',
+    '015_jetti_project_file_c_11':           '015_jetti_project_file_amcf',
+    '015_jetti_project_file_c_12':           '015_jetti_project_file_amcf',
+    # 017
+    '017_jetti_project_file_ea_1':           '017_jetti_project_file_ea_mill_feed_combined',
+    '017_jetti_project_file_ea_2':           '017_jetti_project_file_ea_mill_feed_combined',
+    '017_jetti_project_file_ea_3':           '017_jetti_project_file_ea_mill_feed_combined',
+    '017_jetti_project_file_ea_4':           '017_jetti_project_file_ea_mill_feed_combined',
+    # 020
+    '020_jetti_project_file_hardy_and_waste_har_1': '020_jetti_project_file_hardy_and_waste_h21_master_comp',
+    '020_jetti_project_file_hardy_and_waste_har_2': '020_jetti_project_file_hardy_and_waste_h21_master_comp',
+    '020_jetti_project_file_hardy_and_waste_har_3': '020_jetti_project_file_hardy_and_waste_h21_master_comp',
+    '020_jetti_project_file_hypogene_supergene_hyp_1': '020_jetti_project_file_hypogene_supergene_hypogene_master_composite',
+    '020_jetti_project_file_hypogene_supergene_hyp_2': '020_jetti_project_file_hypogene_supergene_hypogene_master_composite',
+    '020_jetti_project_file_hypogene_supergene_hyp_3': '020_jetti_project_file_hypogene_supergene_hypogene_master_composite',
+    '020_jetti_project_file_hypogene_supergene_sup_1': '020_jetti_project_file_hypogene_supergene_super',
+    '020_jetti_project_file_hypogene_supergene_sup_2': '020_jetti_project_file_hypogene_supergene_super',
+    '020_jetti_project_file_hypogene_supergene_sup_3': '020_jetti_project_file_hypogene_supergene_super',
+    # 021
+    '021_jetti_project_file_c_1':            '021_jetti_project_file_hypogene',
+    '021_jetti_project_file_c_2':            '021_jetti_project_file_hypogene',
+    '021_jetti_project_file_c_3':            '021_jetti_project_file_hypogene',
+    # 022
+    '022_jetti_project_file_s_1':            '022_jetti_project_file_stingray_1',
+    '022_jetti_project_file_s_2':            '022_jetti_project_file_stingray_1',
+    # 024
+    '024_jetti_project_file_cv_1':           '024_jetti_project_file_024cv_cpy',
+    '024_jetti_project_file_cv_2':           '024_jetti_project_file_024cv_cpy',
+    '024_jetti_project_file_cv_3':           '024_jetti_project_file_024cv_cpy',
+    '024_jetti_project_file_cv_4':           '024_jetti_project_file_024cv_cpy',
+    # 026
+    '026_jetti_project_file_ps_1':           '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_ps_2':           '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_ps_3':           '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_ps_4':           '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_cr_1':           '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_cr_2':           '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_cr_3':           '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_cr_4':           '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_secs_1':         '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_secs_2':         '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_secs_3':         '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_secs_4':         '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_ss_1':           '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_ss_2':           '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_ss_3':           '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_ss_4':           '026_jetti_project_file_sample_3_secondary_sulfide',
+    # 028
+    '028_jetti_project_file_comp_1':         '028_jetti_project_file_andesite',
+    '028_jetti_project_file_comp_2':         '028_jetti_project_file_andesite',
+    '028_jetti_project_file_comp_3':         '028_jetti_project_file_monzonite',
+    '028_jetti_project_file_comp_4':         '028_jetti_project_file_monzonite',
+    # 030
+    '030_jetti_project_file_cpy_1':          '030_jetti_project_file_cpy',
+    '030_jetti_project_file_cpy_2':          '030_jetti_project_file_cpy',
+    '030_jetti_project_file_ss_1':           '030_jetti_project_file_ss',
+    '030_jetti_project_file_ss_2':           '030_jetti_project_file_ss',
+    # 003
+    '003_jetti_project_file_be_1':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_2':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_3':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_4':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_5':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_6':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_7':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_be_8':           '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_1': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_2': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_3': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_4': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_5': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_6': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_7': '003_jetti_project_file_amcf_head',
+    '003_jetti_project_file_oxide_columns_beo_8': '003_jetti_project_file_amcf_head',
+    # 006 (terminated)
+    '15289006_column_leach_v1_20200828_pvls1': '006_jetti_project_file_pvls',
+    '15289006_column_leach_v1_20200828_pvls2': '006_jetti_project_file_pvls',
+    '15289006_column_leach_v1_20200828_pvls3': '006_jetti_project_file_pvls',
+    '15289006_column_leach_v1_20200828_pvls4': '006_jetti_project_file_pvls',
+    '15289006_column_leach_v1_20200828_pvo1':  '006_jetti_project_file_pvo',
+    '15289006_column_leach_v1_20200828_pvo2':  '006_jetti_project_file_pvo',
+    '15289006_column_leach_v1_20200828_pvo3':  '006_jetti_project_file_pvo',
+    '15289006_column_leach_v1_20200828_pvo4':  '006_jetti_project_file_pvo',
+    '006_jetti_project_file_pvls1':            '006_jetti_project_file_pvls',
+    '006_jetti_project_file_pvls2':            '006_jetti_project_file_pvls',
+    '006_jetti_project_file_pvls3':            '006_jetti_project_file_pvls',
+    '006_jetti_project_file_pvls4':            '006_jetti_project_file_pvls',
+    '006_jetti_project_file_pvo1':             '006_jetti_project_file_pvo',
+    '006_jetti_project_file_pvo2':             '006_jetti_project_file_pvo',
+    '006_jetti_project_file_pvo3':             '006_jetti_project_file_pvo',
+    '006_jetti_project_file_pvo4':             '006_jetti_project_file_pvo',
+    # 004 (terminated)
+    '15289004_column_leach_v1_20201130_mo1':   '004_jetti_project_file_mo',
+    '15289004_column_leach_v1_20201130_mo2':   '004_jetti_project_file_mo',
+    '15289004_column_leach_v1_20201130_mo3':   '004_jetti_project_file_mo',
+    '15289004_column_leach_v1_20201130_mo4':   '004_jetti_project_file_mo',
+    '15289004_column_leach_v1_20201130_mols1': '004_jetti_project_file_mols',
+    '15289004_column_leach_v1_20201130_mols2': '004_jetti_project_file_mols',
+    '15289004_column_leach_v1_20201130_mols3': '004_jetti_project_file_mols',
+    '15289004_column_leach_v1_20201130_mols4': '004_jetti_project_file_mols',
+    '004_jetti_project_file_mo1':              '004_jetti_project_file_mo',
+    '004_jetti_project_file_mo2':              '004_jetti_project_file_mo',
+    '004_jetti_project_file_mo3':              '004_jetti_project_file_mo',
+    '004_jetti_project_file_mo4':              '004_jetti_project_file_mo',
+    '004_jetti_project_file_mols1':            '004_jetti_project_file_mols',
+    '004_jetti_project_file_mols2':            '004_jetti_project_file_mols',
+    '004_jetti_project_file_mols3':            '004_jetti_project_file_mols',
+    '004_jetti_project_file_mols4':            '004_jetti_project_file_mols',
+    # 002 (terminated)
+    '15289002_column_leach_v1_20191217_qb1':   '002_jetti_project_file_qb',
+    '15289002_column_leach_v1_20191217_qb2':   '002_jetti_project_file_qb',
+    '15289002_column_leach_v1_20191217_qb3':   '002_jetti_project_file_qb',
+    '15289002_column_leach_v1_20191217_qb4':   '002_jetti_project_file_qb',
+    '002_jetti_project_file_qb1':              '002_jetti_project_file_qb',
+    '002_jetti_project_file_qb2':              '002_jetti_project_file_qb',
+    '002_jetti_project_file_qb3':              '002_jetti_project_file_qb',
+    '002_jetti_project_file_qb4':              '002_jetti_project_file_qb',
+    # 01A (terminated)
+    '1528901a_column_leach_20200219_c1':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c2':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c3':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c4':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c5':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c6':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c7':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c8':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c9':  '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c10': '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c11': '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c12': '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c13': '01a_jetti_project_file_c',
+    '1528901a_column_leach_20200219_c14': '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c1':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c2':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c3':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c4':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c5':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c6':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c7':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c8':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c9':  '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c10': '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c11': '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c12': '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c13': '01a_jetti_project_file_c',
+    '01a_jetti_project_file_c14': '01a_jetti_project_file_c',
+    # 007B Tiger
+    '007b_jetti_project_file_tiger_tgr_1': '007b_jetti_project_file_tiger_tgr',
+    '007b_jetti_project_file_tiger_tgr_2': '007b_jetti_project_file_tiger_tgr',
+    '007b_jetti_project_file_tiger_tgr_3': '007b_jetti_project_file_tiger_tgr',
+    '007b_jetti_project_file_tiger_tgr_4': '007b_jetti_project_file_tiger_tgr',
+    # 007 Leopard
+    '007_jetti_project_file_leopard_lep_1': '007_jetti_project_file_leopard_lep',
+    '007_jetti_project_file_leopard_lep_2': '007_jetti_project_file_leopard_lep',
+    '007_jetti_project_file_leopard_lep_3': '007_jetti_project_file_leopard_lep',
+    '007_jetti_project_file_leopard_lep_4': '007_jetti_project_file_leopard_lep',
+    # Chilean SCL
+    'jetti_project_file_leopard_scl_col1':     'jetti_project_file_leopard_scl_sample_los_bronces',
+    'jetti_project_file_leopard_scl_col2':     'jetti_project_file_leopard_scl_sample_los_bronces',
+    'jetti_project_file_leopard_scl_rom1':     'jetti_project_file_leopard_scl_sample_los_bronces',
+    'jetti_project_file_leopard_scl_rom2':     'jetti_project_file_leopard_scl_sample_los_bronces',
+    'jetti_project_file_tiger_rom_rom1':       'jetti_project_file_tiger_rom_m1',
+    'jetti_project_file_tiger_rom_rom2':       'jetti_project_file_tiger_rom_m1',
+    'jetti_project_file_tiger_rom_rom3':       'jetti_project_file_tiger_rom_m1',
+    'jetti_project_file_tiger_rom_c_4':        'jetti_project_file_tiger_rom_m1',
+    'jetti_project_file_tiger_rom_c_5':        'jetti_project_file_tiger_rom_m1',
+    'jetti_project_file_tiger_rom_c_6':        'jetti_project_file_tiger_rom_m2',
+    'jetti_project_file_tiger_rom_c_7':        'jetti_project_file_tiger_rom_m2',
+    'jetti_project_file_tiger_rom_c_8':        'jetti_project_file_tiger_rom_m3',
+    'jetti_project_file_tiger_rom_c_9':        'jetti_project_file_tiger_rom_m3',
+    'jetti_project_file_elephant_scl_col42':   'jetti_project_file_elephant_scl_sample_escondida',
+    'jetti_project_file_elephant_scl_col43':   'jetti_project_file_elephant_scl_sample_escondida',
+    'jetti_project_file_elephant_scl_col52':   'jetti_project_file_elephant_scl_sample_escondida',
+    'jetti_project_file_elephant_scl_col53':   'jetti_project_file_elephant_scl_sample_escondida',
+    'jetti_project_file_toquepala_scl_col63':  'jetti_project_file_toquepala_scl_sample_fresca',
+    'jetti_project_file_toquepala_scl_col64':  'jetti_project_file_toquepala_scl_sample_fresca',
+    'jetti_project_file_toquepala_scl_col65':  'jetti_project_file_toquepala_scl_sample_fresca',
+    'jetti_project_file_toquepala_scl_col66':  'jetti_project_file_toquepala_scl_sample_antigua',
+    'jetti_project_file_toquepala_scl_col67':  'jetti_project_file_toquepala_scl_sample_antigua',
+    'jetti_project_file_zaldivar_scl_col68':   'jetti_project_file_zaldivar_scl_sample_zaldivar',
+    'jetti_project_file_zaldivar_scl_col69':   'jetti_project_file_zaldivar_scl_sample_zaldivar',
+    'jetti_project_file_zaldivar_scl_col70':   'jetti_project_file_zaldivar_scl_sample_zaldivar',
+    'jetti_project_file_elephant_(site)_fat4': 'jetti_project_file_elephant_site',
+    'jetti_project_file_elephant_(site)_fat6': 'jetti_project_file_elephant_site',
+    'jetti_project_file_elephant_(site)_s3':   'jetti_project_file_elephant_site_s3',
+    # Elephant II
+    'jetti_file_elephant_ii_ver_2_ugm_ur_1': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_ur_2': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_1': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_2': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_3': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_4': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_5': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_6': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_7': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_8': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_ugm_uc_9': 'jetti_file_elephant_ii_ugm2',
+    'jetti_file_elephant_ii_ver_2_pq_pr_1': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pr_2': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_1': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_2': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_3': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_4': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_5': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_6': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_7': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_8': 'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_pq_pc_9': 'jetti_file_elephant_ii_pq',
+}
+
+# ==============================================================================
+# COL_ID_RENAME_MAP — renames project_col_id itself for old terminated projects
+# ==============================================================================
+COL_ID_RENAME_MAP = {
+    '1528901a_column_leach_20200219_c1':  '01a_jetti_project_file_c1',
+    '1528901a_column_leach_20200219_c2':  '01a_jetti_project_file_c2',
+    '1528901a_column_leach_20200219_c3':  '01a_jetti_project_file_c3',
+    '1528901a_column_leach_20200219_c4':  '01a_jetti_project_file_c4',
+    '1528901a_column_leach_20200219_c5':  '01a_jetti_project_file_c5',
+    '1528901a_column_leach_20200219_c6':  '01a_jetti_project_file_c6',
+    '1528901a_column_leach_20200219_c7':  '01a_jetti_project_file_c7',
+    '1528901a_column_leach_20200219_c8':  '01a_jetti_project_file_c8',
+    '1528901a_column_leach_20200219_c9':  '01a_jetti_project_file_c9',
+    '1528901a_column_leach_20200219_c10': '01a_jetti_project_file_c10',
+    '1528901a_column_leach_20200219_c11': '01a_jetti_project_file_c11',
+    '1528901a_column_leach_20200219_c12': '01a_jetti_project_file_c12',
+    '1528901a_column_leach_20200219_c13': '01a_jetti_project_file_c13',
+    '1528901a_column_leach_20200219_c14': '01a_jetti_project_file_c14',
+    '15289002_column_leach_v1_20191217_qb1':   '002_jetti_project_file_qb1',
+    '15289002_column_leach_v1_20191217_qb2':   '002_jetti_project_file_qb2',
+    '15289002_column_leach_v1_20191217_qb3':   '002_jetti_project_file_qb3',
+    '15289002_column_leach_v1_20191217_qb4':   '002_jetti_project_file_qb4',
+    '15289004_column_leach_v1_20201130_mo1':   '004_jetti_project_file_mo1',
+    '15289004_column_leach_v1_20201130_mo2':   '004_jetti_project_file_mo2',
+    '15289004_column_leach_v1_20201130_mo3':   '004_jetti_project_file_mo3',
+    '15289004_column_leach_v1_20201130_mo4':   '004_jetti_project_file_mo4',
+    '15289004_column_leach_v1_20201130_mols1': '004_jetti_project_file_mols1',
+    '15289004_column_leach_v1_20201130_mols2': '004_jetti_project_file_mols2',
+    '15289004_column_leach_v1_20201130_mols3': '004_jetti_project_file_mols3',
+    '15289004_column_leach_v1_20201130_mols4': '004_jetti_project_file_mols4',
+    '15289006_column_leach_v1_20200828_pvls1': '006_jetti_project_file_pvls1',
+    '15289006_column_leach_v1_20200828_pvls2': '006_jetti_project_file_pvls2',
+    '15289006_column_leach_v1_20200828_pvls3': '006_jetti_project_file_pvls3',
+    '15289006_column_leach_v1_20200828_pvls4': '006_jetti_project_file_pvls4',
+    '15289006_column_leach_v1_20200828_pvo1':  '006_jetti_project_file_pvo1',
+    '15289006_column_leach_v1_20200828_pvo2':  '006_jetti_project_file_pvo2',
+    '15289006_column_leach_v1_20200828_pvo3':  '006_jetti_project_file_pvo3',
+    '15289006_column_leach_v1_20200828_pvo4':  '006_jetti_project_file_pvo4',
+}
+
+# ==============================================================================
+# ACSUMMARY fixes (partial-string replace on project_sample_id)
+# ==============================================================================
+ACSUMMARY_SAMPLE_ID_FIXES = {
+    '011_jetti_project_file_rm2020':                       '011_jetti_project_file_rm',
+    '011_jetti_project_filecrushed_rm2024':                '011_jetti_project_file_rm',
+    '022_jetti_project_file_below_cutoff_grade':           '022_jetti_project_file_stingray_1',
+    '017_jetti_project_file_ea_mill_feed':                 '017_jetti_project_file_ea_mill_feed_combined',
+    '020_jetti_project_file_hypogene_supergene_supergene': '020_jetti_project_file_hypogene_supergene_super',
+    '020_jetti_project_file_hardy_and_waste_hardy':        '020_jetti_project_file_hardy_and_waste_h21_master_comp',
+    '020_jetti_project_file_hypogene_supergene_hypogene_comp': '020_jetti_project_file_hypogene_supergene_hypogene_master_composite',
+    '015_jetti_project_file_acmr':                         '015_jetti_project_file_amcf',
+    '023_jetti_project_file_ot9':                          '023_jetti_project_file_ot_9',
+    '023_jetti_project_file_ot10':                         '023_jetti_project_file_ot_10',
+    '024_jetti_project_file':                              '024_jetti_project_file_024cv_cpy',
+    '026_jetti_project_file_sample_1':                     '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_sample_2':                     '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_sample_3':                     '026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_sample_4':                     '026_jetti_project_file_sample_4_mixed_material',
+    'jetti_file_elephant_ii_ver_2_pq_pq':                  'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_ugm_ugm2':               'jetti_file_elephant_ii_ugm2',
+    '007_jetti_project_file_leopard_leopard':              '007_jetti_project_file_leopard_lep',
+    '007b_jetti_project_file_tiger_tiger':                 '007b_jetti_project_file_tiger_tgr',
+    '035_jetti_project_file_sample_#2':                    '035_jetti_project_file_sample_2',
+    '035_jetti_project_file_sample_#3':                    '035_jetti_project_file_sample_3',
+}
+
+# ==============================================================================
+# CHEMCHAR fixes (exact-match replace on project_sample_id)
+# ==============================================================================
+CHEMCHAR_SAMPLE_ID_FIXES = {
+    'jetti_project_file_elephant_(site)_elephant':        'jetti_project_file_elephant_site',
+    '015_jetti_project_file_amcf_head':                   '015_jetti_project_file_amcf',
+    '014_jetti_project_file_bag_head':                    '014_jetti_project_file_bag',
+    '014_jetti_project_file_kmb_head':                    '014_jetti_project_file_kmb',
+    '024_jetti_project_file_024cvcpy_avg':                '024_jetti_project_file_024cv_cpy',
+    '023_jetti_project_file_ot10_avg':                    '023_jetti_project_file_ot_10',
+    '023_jetti_project_file_ot9_avg':                     '023_jetti_project_file_ot_9',
+    '011_jetti_project_file_rm_head_sample':              '011_jetti_project_file_rm',
+    '011_jetti_project_filecrushed_rm_2024':              '011_jetti_project_file_rm_crushed',
+    '012_jetti_project_file_cs_quebalix':                 '012_jetti_project_file_quebalix',
+    '012_jetti_project_file_cs_incremento':               '012_jetti_project_file_incremento',
+    '013_jetti_project_file_combined_head_average':       '013_jetti_project_file_combined',
+    '022_jetti_project_file_stingray_1_head':             '022_jetti_project_file_stingray_1',
+    '026_jetti_project_file_sample_#1_(primary_sulfide)': '026_jetti_project_file_sample_1_primary_sulfide',
+    '026_jetti_project_file_sample_#2_(carrizalillo)':    '026_jetti_project_file_sample_2_carrizalillo',
+    '026_jetti_project_file_sample_#3_(secondary_sulfide)':'026_jetti_project_file_sample_3_secondary_sulfide',
+    '026_jetti_project_file_sample_#4_(mixed_material)':  '026_jetti_project_file_sample_4_mixed_material',
+    'jetti_file_elephant_ii_ver_2_pq_pq_average':         'jetti_file_elephant_ii_pq',
+    'jetti_file_elephant_ii_ver_2_ugm_ugm_average':       'jetti_file_elephant_ii_ugm2',
+    '1528901a_column_leach_20200219_muestra_1_head':       '01a_jetti_project_file_c',
+    '15289002_column_leach_v1_20191217_qb':                '002_jetti_project_file_qb',
+    '15289004_column_leach_v1_20201130_bagdad':            '004_jetti_project_file_mols',
+    '15289004_column_leach_v1_20201130_morenci':           '004_jetti_project_file_mo',
+    '15289006_column_leach_v1_20200828_pvo':               '006_jetti_project_file_pvo',
+    '15289006_column_leach_v1_20200828_pvls':              '006_jetti_project_file_pvls',
+    '007_jetti_project_file_leopard_leopard':              '007_jetti_project_file_leopard_lep',
+    '007_jetti_project_file_leopard_leopard_(dup)':        '007_jetti_project_file_leopard_lep',
+    '007b_jetti_project_file_tiger_tiger_head':            '007b_jetti_project_file_tiger_tgr',
+    '035_jetti_project_file_sample_#2_jabal_shayban_(avg)':'035_jetti_project_file_sample_2',
+    '035_jetti_project_file_sample_3_avg':                 '035_jetti_project_file_sample_3',
+}
+
+# ==============================================================================
+# MINERALOGY MAPPINGS (for step_04_mineralogy)
+# ==============================================================================
+MINERALOGY_ID_MAP = {
+    ('007B Jetti Project File - Tiger',          'tbl-Mineralcomposition'):                  '007b_jetti_project_file_tiger_tgr',
+    ('007 Jetti Project File - Leopard',         'tbl-Mineralogy_Modals_LEP'):               '007_jetti_project_file_leopard_lep',
+    ('015 Jetti Project File',                   'tbl-Mineralogy_Modals_SGS'):               '015_jetti_project_file_amcf',
+    ('014 Jetti Project File',                   'tbl-BAG_Mineralogy_Modals'):               '014_jetti_project_file_bag',
+    ('014 Jetti Project File',                   'tbl-KMB_Mineralogy_Modals'):               '014_jetti_project_file_kmb',
+    ('022 Jetti Project File',                   'tbl-Mineralcomposition'):                  '022_jetti_project_file_stingray_1',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_primary_sulfide'):   '026_jetti_project_file_sample_1_primary_sulfide',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_carrizalillo'):      '026_jetti_project_file_sample_2_carrizalillo',
+    ('026 Jetti Project File',                   'tbl-Mineralogy_Modals_secondary_sulfide'): '026_jetti_project_file_sample_3_secondary_sulfide',
+    ('Jetti Project File - Zaldivar SCL',        'tbl-Modals_Zaldivar'):                    'jetti_project_file_zaldivar_scl_sample_zaldivar',
+    ('Jetti Project File - Leopard SCL',         'tbl-Modals_Los_Bronces'):                 'jetti_project_file_leopard_scl_sample_los_bronces',
+    ('Jetti Project File - Elephant SCL',        'tbl-Modals_MEL'):                         'jetti_project_file_elephant_scl_sample_escondida',
+    ('Jetti File - Elephant II Ver 2 UGM',       'tbl-Mineralogy_Modals'):                  'jetti_file_elephant_ii_ugm2',
+    ('Jetti Project File - Elephant (Site)',     'tbl-Mineralogy_Modals_M1'):               'jetti_project_file_elephant_site',
+    ('Jetti Project File - Toquepala SCL',       'tbl-Modals_Toquepala_Fresca'):            'jetti_project_file_toquepala_scl_sample_fresca',
+    ('020 Jetti Project File Hypogene_Supergene','tbl-Mineralogy_Modals_Sup2'):             '020_jetti_project_file_hypogene_supergene_super',
+}
+
+MINERALOGY_SAMPLE_MAP = {
+    ('15289-006 - Column Leach_v1.2020-08-28', 'PVO'):  '006_jetti_project_file_pvo',
+    ('15289-006 - Column Leach_v1.2020-08-28', 'PVLS'): '006_jetti_project_file_pvls',
+}
+
+# (source_id, new_id) — mineralogy rows to duplicate
+MINERALOGY_DUPLICATES = [
+    ('015_jetti_project_file_amcf',    '015_jetti_project_file_amcf_8in'),
+    ('jetti_file_elephant_ii_ugm2',    'jetti_file_elephant_ii_ugm2_coarse'),
+]
+# After duplication: rename 015_jetti_project_file_amcf → 015_jetti_project_file_amcf_6in
+
+# ==============================================================================
+# LEACHING_COLS_TO_KEEP
+# project_col_id → [project_name, reactor_start_cell, project_sample_id,
+#                   catalyzed_y_n, ongoing_y_n]
+# ==============================================================================
+LEACHING_COLS_TO_KEEP = {
+    '011_jetti_project_file_rm_1':           ['011 Jetti Project File', 'tbl-RT_24', '011_jetti_project_file_rm', 'catalyzed', 'ongoing'],
+    '011_jetti_project_file_rm_2':           ['011 Jetti Project File', 'tbl-RT_21', '011_jetti_project_file_rm', 'control', 'ongoing'],
+    '011_jetti_project_filecrushed_011rm_5': ['011 Jetti Project File-Crushed', 'tbl-RT_21', '011_jetti_project_file_rm_crushed', 'control', 'ongoing'],
+    '011_jetti_project_filecrushed_011rm_6': ['011 Jetti Project File-Crushed', 'tbl-RT_21', '011_jetti_project_file_rm_crushed', 'control', 'ongoing'],
+    '011_jetti_project_filecrushed_011rm_7': ['011 Jetti Project File-Crushed', 'tbl-RT_24', '011_jetti_project_file_rm_crushed', 'catalyzed', 'ongoing'],
+    '011_jetti_project_filecrushed_011rm_8': ['011 Jetti Project File-Crushed', 'tbl-RT_24', '011_jetti_project_file_rm_crushed', 'catalyzed', 'ongoing'],
+    '014_jetti_project_file_b_4':            ['014 Jetti Project File', 'tbl-RTB_8', '014_jetti_project_file_bag', 'catalyzed', 'terminated'],
+    '014_jetti_project_file_b_2':            ['014 Jetti Project File', 'tbl-RTB_7', '014_jetti_project_file_bag', 'control', 'terminated'],
+    '014_jetti_project_file_k_4':            ['014 Jetti Project File', 'tbl-RTK_8', '014_jetti_project_file_kmb', 'catalyzed', 'terminated'],
+    '014_jetti_project_file_k_1':            ['014 Jetti Project File', 'tbl-RTK_7', '014_jetti_project_file_kmb', 'control', 'terminated'],
+    '015_jetti_project_file_c_12':           ['015 Jetti Project File', 'tbl-RT_3', '015_jetti_project_file_amcf_6in', 'catalyzed', 'terminated'],
+    '015_jetti_project_file_c_7':            ['015 Jetti Project File', 'tbl-RT_2', '015_jetti_project_file_amcf_6in', 'control', 'terminated'],
+    '015_jetti_project_file_c_6':            ['015 Jetti Project File', 'tbl-RT_3', '015_jetti_project_file_amcf_8in', 'catalyzed', 'terminated'],
+    '015_jetti_project_file_c_11':           ['015 Jetti Project File', 'tbl-RT_2', '015_jetti_project_file_amcf_8in', 'control', 'terminated'],
+    '017_jetti_project_file_ea_4':           ['017 Jetti Project File', 'tbl-RTEA_2', '017_jetti_project_file_ea_mill_feed_combined', 'catalyzed', 'ongoing'],
+    '017_jetti_project_file_ea_1':           ['017 Jetti Project File', 'tbl-RTEA_1', '017_jetti_project_file_ea_mill_feed_combined', 'control', 'ongoing'],
+    '020_jetti_project_file_hypogene_supergene_hyp_2': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_2', '020_jetti_project_file_hypogene_supergene_hypogene_master_composite', 'catalyzed', 'ongoing'],
+    '020_jetti_project_file_hypogene_supergene_hyp_1': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_1', '020_jetti_project_file_hypogene_supergene_hypogene_master_composite', 'control', 'ongoing'],
+    '020_jetti_project_file_hypogene_supergene_hyp_3': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_1', '020_jetti_project_file_hypogene_supergene_hypogene_master_composite', 'control', 'ongoing'],
+    '020_jetti_project_file_hypogene_supergene_sup_2': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_20', '020_jetti_project_file_hypogene_supergene_super', 'catalyzed', 'terminated'],
+    '020_jetti_project_file_hypogene_supergene_sup_1': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_19', '020_jetti_project_file_hypogene_supergene_super', 'control', 'terminated'],
+    '020_jetti_project_file_hypogene_supergene_sup_3': ['020 Jetti Project File Hypogene_Supergene', 'tbl-RT_19', '020_jetti_project_file_hypogene_supergene_super', 'control', 'terminated'],
+    '022_jetti_project_file_s_2':            ['022 Jetti Project File', 'tbl-RT_2', '022_jetti_project_file_stingray_1', 'catalyzed', 'terminated'],
+    '022_jetti_project_file_s_1':            ['022 Jetti Project File', 'tbl-RT_1', '022_jetti_project_file_stingray_1', 'control', 'terminated'],
+    '024_jetti_project_file_cv_4':           ['024 Jetti Project File', 'tbl-RT_3', '024_jetti_project_file_024cv_cpy', 'catalyzed', 'ongoing'],
+    '024_jetti_project_file_cv_1':           ['024 Jetti Project File', 'tbl-RT_1', '024_jetti_project_file_024cv_cpy', 'control', 'ongoing'],
+    'jetti_project_file_leopard_scl_col1':   ['Jetti Project File - Leopard SCL', 'tbl-RT_2', 'jetti_project_file_leopard_scl_sample_los_bronces', 'catalyzed', 'ongoing'],
+    'jetti_project_file_leopard_scl_col2':   ['Jetti Project File - Leopard SCL', 'tbl-RT_1', 'jetti_project_file_leopard_scl_sample_los_bronces', 'control', 'ongoing'],
+    'jetti_project_file_leopard_scl_rom1':   ['Jetti Project File - Leopard SCL', 'tbl-RT_2', 'jetti_project_file_leopard_scl_sample_los_bronces', 'catalyzed', 'ongoing'],
+    'jetti_project_file_leopard_scl_rom2':   ['Jetti Project File - Leopard SCL', 'tbl-RT_1', 'jetti_project_file_leopard_scl_sample_los_bronces', 'control', 'ongoing'],
+    'jetti_project_file_elephant_scl_col42': ['Jetti Project File - Elephant SCL', 'tbl-RT_8', 'jetti_project_file_elephant_scl_sample_escondida', 'catalyzed', 'terminated'],
+    'jetti_project_file_elephant_scl_col43': ['Jetti Project File - Elephant SCL', 'tbl-RT_5R', 'jetti_project_file_elephant_scl_sample_escondida', 'control', 'terminated'],
+    'jetti_project_file_toquepala_scl_col63':['Jetti Project File - Toquepala SCL', 'tbl-RT_24', 'jetti_project_file_toquepala_scl_sample_fresca', 'catalyzed', 'terminated'],
+    'jetti_project_file_toquepala_scl_col64':['Jetti Project File - Toquepala SCL', 'tbl-RT_21', 'jetti_project_file_toquepala_scl_sample_fresca', 'control', 'terminated'],
+    'jetti_project_file_zaldivar_scl_col69': ['Jetti Project File - Zaldivar SCL', 'tbl-RT_32', 'jetti_project_file_zaldivar_scl_sample_zaldivar', 'catalyzed', 'terminated'],
+    'jetti_project_file_zaldivar_scl_col70': ['Jetti Project File - Zaldivar SCL', 'tbl-RT_29', 'jetti_project_file_zaldivar_scl_sample_zaldivar', 'control', 'terminated'],
+    'jetti_project_file_elephant_(site)_fat4':['Jetti Project File - Elephant SCL', 'tbl-RT_8', 'jetti_project_file_elephant_scl_sample_escondida', 'catalyzed', 'ongoing'],
+    'jetti_project_file_elephant_(site)_fat6':['Jetti Project File - Elephant SCL', 'tbl-RT_5R', 'jetti_project_file_elephant_scl_sample_escondida', 'control', 'ongoing'],
+    '003_jetti_project_file_be_2':           ['003 Jetti Project File', 'tbl-RT_3', '003_jetti_project_file_amcf_head', 'catalyzed', 'terminated'],
+    '003_jetti_project_file_be_1':           ['003 Jetti Project File', 'tbl-RT_2', '003_jetti_project_file_amcf_head', 'control', 'terminated'],
+    '013_jetti_project_file_o_4':            ['013 Jetti Project File', 'tbl-RTO_4', '013_jetti_project_file_combined', 'catalyzed', 'terminated'],
+    '013_jetti_project_file_o_2':            ['013 Jetti Project File', 'tbl-RTO_2', '013_jetti_project_file_combined', 'control', 'terminated'],
+    '013_jetti_project_file_o_3':            ['013 Jetti Project File', 'tbl-RTO_2', '013_jetti_project_file_combined', 'control', 'terminated'],
+    '026_jetti_project_file_ps_1':           ['026 Jetti Project File', 'tbl-RT_1', '026_jetti_project_file_sample_1_primary_sulfide', 'control', 'ongoing'],
+    '026_jetti_project_file_ps_2':           ['026 Jetti Project File', 'tbl-RT_1', '026_jetti_project_file_sample_1_primary_sulfide', 'control', 'ongoing'],
+    '026_jetti_project_file_ps_3':           ['026 Jetti Project File', 'tbl-RT_4', '026_jetti_project_file_sample_1_primary_sulfide', 'catalyzed', 'ongoing'],
+    '026_jetti_project_file_ps_4':           ['026 Jetti Project File', 'tbl-RT_4', '026_jetti_project_file_sample_1_primary_sulfide', 'catalyzed', 'ongoing'],
+    '026_jetti_project_file_cr_2':           ['026 Jetti Project File', 'tbl-RT_10', '026_jetti_project_file_sample_1_primary_sulfide', 'control', 'ongoing'],
+    '026_jetti_project_file_cr_4':           ['026 Jetti Project File', 'tbl-RT_12', '026_jetti_project_file_sample_1_primary_sulfide', 'catalyzed', 'ongoing'],
+    '026_jetti_project_file_ss_2':           ['026 Jetti Project File', 'tbl-RT_18', '026_jetti_project_file_sample_1_primary_sulfide', 'control', 'ongoing'],
+    '026_jetti_project_file_ss_4':           ['026 Jetti Project File', 'tbl-RT_20', '026_jetti_project_file_sample_1_primary_sulfide', 'catalyzed', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_pq_pr_2':  ['Jetti File - Elephant II Ver 2 PQ', '', 'jetti_file_elephant_ii_pq_rom', 'catalyzed', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_pq_pr_1':  ['Jetti File - Elephant II Ver 2 PQ', '', 'jetti_file_elephant_ii_pq_rom', 'control', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_ugm_ur_2': ['Jetti File - Elephant II Ver 2 UGM', '', 'jetti_file_elephant_ii_ugm2_rom', 'catalyzed', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_ugm_ur_1': ['Jetti File - Elephant II Ver 2 UGM', '', 'jetti_file_elephant_ii_ugm2_rom', 'control', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_ugm_uc_4': ['Jetti File - Elephant II Ver 2 UGM', '', 'jetti_file_elephant_ii_ugm2_crushed', 'catalyzed', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_ugm_uc_1': ['Jetti File - Elephant II Ver 2 UGM', '', 'jetti_file_elephant_ii_ugm2_crushed', 'control', 'ongoing'],
+    'jetti_file_elephant_ii_ver_2_ugm_uc_3': ['Jetti File - Elephant II Ver 2 UGM', '', 'jetti_file_elephant_ii_ugm2_crushed', 'control', 'ongoing'],
+    '006_jetti_project_file_pvls2':          ['15289-006 - Column Leach_v1.2020-08-28', '', '006_jetti_project_file_pvls', 'catalyzed', 'terminated'],
+    '006_jetti_project_file_pvls3':          ['15289-006 - Column Leach_v1.2020-08-28', '', '006_jetti_project_file_pvls', 'control', 'terminated'],
+    '006_jetti_project_file_pvo1':           ['15289-006 - Column Leach_v1.2020-08-28', 'tbl-RT_PVO_Catalyzed', '006_jetti_project_file_pvo', 'catalyzed', 'terminated'],
+    '006_jetti_project_file_pvo2':           ['15289-006 - Column Leach_v1.2020-08-28', 'tbl-RT_PVO_Catalyzed', '006_jetti_project_file_pvo', 'catalyzed', 'terminated'],
+    '006_jetti_project_file_pvo3':           ['15289-006 - Column Leach_v1.2020-08-28', 'tbl-RT_PVO_Control', '006_jetti_project_file_pvo', 'control', 'terminated'],
+    '007b_jetti_project_file_tiger_tgr_1':   ['007B Jetti Project File - Tiger', 'tbl-RT_1', '007b_jetti_project_file_tiger_tgr', 'control', 'ongoing'],
+    '007b_jetti_project_file_tiger_tgr_2':   ['007B Jetti Project File - Tiger', 'tbl-RT_1', '007b_jetti_project_file_tiger_tgr', 'control', 'ongoing'],
+    '007b_jetti_project_file_tiger_tgr_4':   ['007B Jetti Project File - Tiger', 'tbl-RT_4', '007b_jetti_project_file_tiger_tgr', 'catalyzed', 'ongoing'],
+    '007_jetti_project_file_leopard_lep_1':  ['007 Jetti Project File - Leopard', 'tbl-RT_1', '007_jetti_project_file_leopard_lep', 'control', 'ongoing'],
+    '007_jetti_project_file_leopard_lep_2':  ['007 Jetti Project File - Leopard', 'tbl-RT_1', '007_jetti_project_file_leopard_lep', 'control', 'ongoing'],
+    '007_jetti_project_file_leopard_lep_4':  ['007 Jetti Project File - Leopard', 'tbl-RT_4', '007_jetti_project_file_leopard_lep', 'catalyzed', 'ongoing'],
+}
+
+# ==============================================================================
+# COLUMNS TO MATCH
+# ==============================================================================
+COLS_TO_MATCH_CHEMCHAR = [
+    'cu_%', 'fe_%', 'cu_seq_h2so4_%', 'cu_seq_nacn_%', 'cu_seq_a_r_%',
+    'acid_soluble_%', 'cyanide_soluble_%', 'residual_cpy_%',
+]
+
+COLS_TO_MATCH_COLUMN_SUMMARY = [
+    'material_size_p80_in', 'feed_head_cu_%', 'feed_head_fe_%',
+    'feed_head_mg_%', 'feed_head_al_%', 'feed_head_co_%', 'feed_head_si_%',
+    'lixiviant_initial_ph', 'lixiviant_initial_orp_mv',
+    'lixiviant_initial_cu_mg_l', 'lixiviant_initial_fe_mg_l',
+    'catalyst_start_days_of_leaching', 'column_height_m',
+    'column_inner_diameter_m', 'feed_mass_kg', 'irrigation_rate_l_m2_h',
+    'agglomeration_y_n', 'agglomeration_medium', 'acid_in_agglomeration_kg_t',
+    'lixiviant_inoc_site_raff_syn_raff', 'inoculum_%', 'aeration_y_n',
+    'aeration_dosage_l_min', 'catalyst_y_n', 'catalyst_dosage_mg_day',
+    'catalyst_dosage_mg_l',
+]
+
+COL_TO_MATCH_MINERALOGY = [
+    'pyrite', 'chalcopyrite', 'quartz', 'k-feldspar', 'biotite', 'chlorite',
+    'clays', 'bornite', 'covellite', 'chalcocite', 'enargite', 'molybdenite',
+    'plagioclase', 'sericite_muscovite', 'fe_oxides', 'other_oxides',
+    'sphalerite', 'epidote', 'rutile', 'apatite', 'amphibole_pyroxene',
+    'carbonates', 'other_sulfides', 'other_silicates', 'other_cu_sulfides',
+    'cu_oxides_carbonates',
+    'cus_total_sum', 'cus_exposed_50pct_sum', 'cus_locked_30pct_sum',
+    'cus_exposed_50pct_normalized', 'cus_locked_30pct_normalized',
+]
+
+COLS_TO_MATCH_QEMSCAN = [
+    'copper_sulphides_lib_exposed', 'copper_sulphides_lib_50-80%_exposed',
+    'copper_sulphides_lib_30-50%_exposed', 'copper_sulphides_lib_20-30%_exposed',
+    'copper_sulphides_lib_10-20%_exposed', 'copper_sulphides_lib_0-10%_exposed',
+    'copper_sulphides_lib_locked',
+    'cus_total_sum', 'cus_exposed_50pct_sum', 'cus_locked_30pct_sum',
+    'cus_exposed_50pct_normalized', 'cus_locked_30pct_normalized',
+]
+
+# ==============================================================================
+# MINERAL GROUPINGS
+# ==============================================================================
+MINERAL_GROUPS = {
+    'primary_copper_sulfides':   ['chalcopyrite','enargite','tennantite','tetrahedrite','luzonite','cubanite','other_cu_sulfides'],
+    'secondary_copper_sulfides': ['chalcocite','bornite','digenite','chalcocite_digenite','covellite','yarrowite','anilite','geerite','spionkopite','native_copper'],
+    'copper_oxides':             ['cuprite','tenorite','malachite','azurite','malachite_azurite','chrysocolla','dioptase','plancheite','shattuckite','atacamite','paratacamite','clinoatacamite','brochantite','pseudomalachite','turquoise','libethenite'],
+    'mixed_copper_ores':         ['cu_oxides_carbonates','cu_bearing_clay','cu_bearing_fe_ox_oh','cu_bearing_silicates','cu_wad','cu_mn_wad','other_copper','other_cu_minerals'],
+    'acid_generating_sulfides':  ['pyrite','molybdenite'],
+    'gangue_sulfides':           ['sphalerite','galena','other_sulfides'],
+    'gangue_silicates':          ['quartz','plagioclase','feldspar_albite','albite','orthoclase','cana-plagioclases','ca-plagioclase','na_ca_plagioclase','na_plagioclase','ca_na-plagioclase','plagioclase_feldspar','plagioclases','k-feldspar','other_silicates','amphibole_pyroxene','amphibole','pyroxenes','sericite_muscovite','muscovite','biotite','chlorite','clays_other_silicates','clays__other_silicates','tourmaline','clays','fe_clay','pyrophyllite','montmorillonite','kaolinite','biotite_phlogopite','muscovite_sericite','chlorites_smectites','chlorites','micas_illite','epidote','epidote_group','actinolite','titanite','andalusite','sphene','gypsum','jarosite','alunite','fe_sulphate_low_al_si_k','sulphates','anhydrite_gypsum','gypsum_anhydrite','sulphur','alunite_jarosite','other_sulfates'],
+    'fe_oxides':                 ['oxides','fe_oxides','other_oxides','hematite','magnetite','magnetite-hematite','hematite-magnetite','fe_oxides_hydroxides','fe_oxides_cu','limonite-cu','limonite'],
+    'carbonates':                ['carbonates','calcite','dolomite','other_carbonates','siderite'],
+    'accessory_minerals':        ['zircon','barite','rutile','rutile_anatase','ilmenite','mg_so4','dioptase','corundum_gibbsite_boehmite'],
+    'phosphate_minerals':        ['apatite_monazite','fe_al_po4','monazite','apatite','svanbergite'],
+}
+
+# ==============================================================================
+# MANUAL FILTERS — documented intentional data exclusions
+# ==============================================================================
+MANUAL_FILTERS = {
+    'remove_015_holdup_gre':         "Remove hold-up/GRE variants for project 015 (condition is not null).",
+    'stopped_columns_zaldivar_69_70':"Stop Zaldivar col69/col70 after day 1361 (email NL oct 29th 2024).",
+    'stopped_columns_leopard_rom':   "Exclude Leopard ROM1/ROM2 outside 438-444 days.",
+    'stopped_columns_elephant_42_43':"Stop Elephant SCL col42/col43 after day 1115.",
+    'stopped_columns_toquepala':     "Stop Toquepala col63/col64 after day 952.",
+    'stopped_columns_rm_1':          "Exclude RM_1 between day 632-850.",
+    'zero_catalyst_control':         "Set catalyst=0 for all control project_col_ids.",
+    'acsummary_drop_24h':            "Drop AC summary rows where start_cell contains '24h'.",
+    'acsummary_leopard_table4':      "Drop Leopard Bronces tbl-Table4 row (pH=2 duplicate).",
+    'drop_003_rt_10r':               "Drop (003, tbl-RT_10R) from reactor model — weird values.",
+    'drop_024_rt_2':                 "Drop (024, tbl-RT_2) from reactor model — weird values.",
+    'drop_014_rtb7_day42':           "Drop day 42.25 for (014, tbl-RTB_7).",
+    'drop_017_rtea1_days48_42':      "Drop days 48.0/42.0 for (017, tbl-RTEA_1).",
+    'drop_020_rt19_early':           "Drop early days for 020 tbl-RT_19/RT_20.",
+    'keep_cu_extraction_positive':   "Filter reactor rows to cu_extraction > 0.",
+    'preprocess_drop_zero_recovery': "Drop rows where cu_recovery_% <= 0.",
+    'preprocess_require_increasing': "Keep only rows where cu_recovery_% is strictly increasing within each group.",
+    'preprocess_drop_sparse_cols':   f"Drop columns with < {MIN_THRESH*100:.0f}% non-NaN (ID cols always protected).",
+    'mineralogy_zero_low_values':    "Replace mineralogy values < 0.0005 with 0 for [pyrite,chlorite,bornite,enargite,fe_oxides].",
+}

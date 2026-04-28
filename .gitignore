@@ -8,7 +8,17 @@ __pycache__/
 
 # Packaged exports and large training artifacts
 *.zip
-NN_Pytorch_ExpEq_columns_only_v7/
-NN_Pytorch_ExpEq_columns_only_v8/
-NN_Pytorch_ExpEq_columns_only_v9/
-NN_Pytorch_ExpEq_columns_only_v10/
+NN_Pytorch_ExpEq_columns_only_v*/
+
+# Generated weekly pipeline exports
+pipeline/intermediate/step_06_leaching_performance_weekly.csv
+pipeline/intermediate/step_06_leaching_performance_weekly_averaged.csv
+pipeline/outputs/leaching_performance_weekly.csv
+pipeline/outputs/leaching_performance_weekly_averaged.csv
+
+# Generated pipeline data and raw workbook exports
+pipeline/intermediate/
+pipeline/outputs/
+pipeline/user_editable_files/*.xlsx
+pipeline/user_editable_files/*.xlsm
+pipeline/token_cache.bin

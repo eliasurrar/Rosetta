@@ -21,7 +21,7 @@ from dash import Dash, Input, Output, State, callback_context, dcc, html, no_upd
 # BUT IT WILL BE NECESSARY HERE TO THE USER TO INPUT TO CALCULATE EQUIVALETS.
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_SCRIPT_PATH = os.path.join(THIS_DIR, "NN_ExpEq_columns_only_v10.py")
+BASE_SCRIPT_PATH = os.path.join(THIS_DIR, "NN_ExpEq_columns_only_v12.py")
 MINERALOGY_CLUSTERING_PATH = os.path.join(THIS_DIR, "rosetta_mineralogy_clustering.py")
 APP_ASSETS_DIR = os.path.join(THIS_DIR, "assets")
 HEADER_LOGO_ASSET = "rosetta_logo_v1.png"
@@ -54,6 +54,9 @@ APP_PANEL_SHADOW = "0 24px 60px rgba(2, 9, 18, 0.42)"
 
 CONTROL_CURVE_COLOR = "#1f77b4"
 CATALYZED_CURVE_COLOR = "#ff7f0e"
+PROFILE_BREAK_COUNT = 1
+PROFILE_BIN_COUNT = 2
+DEFAULT_PROFILE_BREAK_DAYS: Tuple[float, ...] = (500.0,)
 
 PREDICTION_FIGURE_THEMES: Dict[str, Dict[str, Any]] = {
     "light": {
@@ -92,7 +95,7 @@ PREDICTION_FIGURE_THEMES: Dict[str, Dict[str, Any]] = {
 
 
 def load_base_module() -> Any:
-    spec = importlib.util.spec_from_file_location("nn_expeq_columns_only_v10_base", BASE_SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("nn_expeq_columns_only_v12_base", BASE_SCRIPT_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load base model script: {BASE_SCRIPT_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -259,6 +262,7 @@ EQUIVALENT_COLUMNS = [
     OXIDES_EQUIV_COL,
 ]
 DERIVED_MODEL_COLUMNS = set(RATIO_COLUMNS + EQUIVALENT_COLUMNS)
+INTERNAL_ONLY_MODEL_COLUMNS = set(getattr(BASE, "_COMPUTED_STATIC_FEATURES", set()))
 TOP_CONTROL_STATIC_COLUMNS = [
     "column_height_m",
     "column_inner_diameter_m",
@@ -272,6 +276,7 @@ SPECIAL_COLUMN_LABELS = {
     FE_INPUT_COL: "Fe %",
     FE_HEAD_COL: "Fe %",
     CU_HEAD_COL: "Cu %",
+    "terminal_slope_rate": "Terminal Slope Rate (%/day)",
     "column_volume_m3": "Column Volume (m3)",
     "apparent_bulk_density_t_m3": "Apparent Bulk Density (t/m3)",
     "material_size_to_column_diameter_ratio": "Material Size / Column Diameter Ratio",
@@ -370,10 +375,11 @@ GROUPED_GANGUE_PRIORITY_COLUMN = "grouped_gangue_silicates"
 GROUPED_GANGUE_PRIORITY_SHARE = 0.80
 INPUT_ARROW_STEPS: Dict[str, float] = {
     "max-day": 100.0,
-    "weekly-catalyst-gt-week": 0.5,
+    "catalyst-addition-mg-l": 50.0,   # mg/L step for catalyst feed concentration
     "confidence-interval": 5.0,
     "irrigation-rate-l-m2-h": 0.5,
     "catalyst-addition-start-day": 50.0,
+    "profile-break-day": 50.0,
     "column_height_m": 1.0,
     "column_inner_diameter_m": 0.1,
     "material_size_p80_in": 0.5,
@@ -386,6 +392,9 @@ INPUT_ARROW_STEPS: Dict[str, float] = {
     "grouped_fe_oxides": 0.25,
     "grouped_phosphate_minerals": 0.1,
     "grouped_accessory_minerals": 0.5, 
+    "lixiviant_initial_fe_mg_l": 500.0,
+    "lixiviant_initial_ph": 0.5,
+    "lixiviant_initial_orp_mv": 50.0,
 }
 GROUPED_INPUT_CAPTIONS: Dict[str, str] = {
     "grouped_fe_oxides": "hematite, magnetite, limonite, etc.",
@@ -434,13 +443,125 @@ def increment_button_component_id(component_id: str) -> str:
     return f"{component_id}-increment"
 
 
+def profile_break_component_id(break_idx: int) -> str:
+    return f"profile-break-day-{int(break_idx)}"
+
+
+def profile_break_component_ids() -> List[str]:
+    return [profile_break_component_id(idx) for idx in range(PROFILE_BREAK_COUNT)]
+
+
+def profile_bin_component_id(profile_name: str, bin_idx: int) -> str:
+    return f"{component_token(profile_name)}-bin-{int(bin_idx)}"
+
+
+def profile_bin_component_ids(profile_name: str) -> List[str]:
+    return [profile_bin_component_id(profile_name, idx) for idx in range(PROFILE_BIN_COUNT)]
+
+
+def resolve_profile_break_days(
+    break_days: Any,
+    min_value: float = 0.0,
+    max_value: float | None = None,
+    min_gap: float | None = None,
+) -> np.ndarray:
+    resolved_max = (
+        float(BASE.CONFIG.get("ensemble_plot_target_day", 2500.0))
+        if max_value is None
+        else float(max_value)
+    )
+    resolved_gap = (
+        float(INPUT_ARROW_STEPS.get("profile-break-day", 50.0))
+        if min_gap is None
+        else float(max(1e-6, min_gap))
+    )
+    defaults = np.asarray(DEFAULT_PROFILE_BREAK_DAYS, dtype=float)
+    raw = np.asarray(break_days, dtype=float).reshape(-1)
+    if raw.size == 0:
+        raw = defaults.copy()
+    elif raw.size != PROFILE_BREAK_COUNT:
+        raw = BASE.align_profile_to_time_length(raw, PROFILE_BREAK_COUNT)
+    raw = np.where(np.isfinite(raw), raw, defaults)
+    raw = np.sort(raw.astype(float))
+    if resolved_max <= float(min_value) + resolved_gap:
+        resolved_max = float(min_value) + resolved_gap + 1.0
+    first = float(np.clip(raw[0], float(min_value), resolved_max))
+    return np.asarray(
+        [round_control_value(first, MAX_CONTROL_DECIMALS)],
+        dtype=float,
+    )
+
+
+def resolve_catalyst_profile_break_days(
+    profile_break_days: Any,
+    catalyst_start_day: float,
+    max_value: float | None = None,
+    min_gap: float | None = None,
+) -> np.ndarray:
+    catalyst_start = float(max(0.0, value_or_default(catalyst_start_day, 0.0)))
+    return resolve_profile_break_days(
+        profile_break_days,
+        min_value=catalyst_start,
+        max_value=max_value,
+        min_gap=min_gap,
+    )
+
+
+def profile_bin_ranges(profile_break_days: Any) -> List[Tuple[float, float | None]]:
+    break_days = resolve_profile_break_days(profile_break_days)
+    return [
+        (0.0, float(break_days[0])),
+        (float(break_days[0]), None),
+    ]
+
+
+def catalyst_profile_bin_ranges(
+    catalyst_start_day: float,
+    profile_break_days: Any,
+) -> List[Tuple[float, float | None]]:
+    catalyst_start = float(max(0.0, value_or_default(catalyst_start_day, 0.0)))
+    break_days = resolve_catalyst_profile_break_days(profile_break_days, catalyst_start)
+    return [
+        (catalyst_start, float(break_days[0])),
+        (float(break_days[0]), None),
+    ]
+
+
+def format_profile_bin_label(start_day: float, end_day: float | None) -> str:
+    if end_day is None:
+        return f"{start_day:.0f}+ days"
+    if start_day <= 0.0 + 1e-9:
+        return f"0-{end_day:.0f} days"
+    return f"{start_day:.0f}-{end_day:.0f} days"
+
+
+def build_piecewise_profile_from_bins(
+    time_days: np.ndarray,
+    bin_values: Any,
+    profile_break_days: Any,
+) -> np.ndarray:
+    t = np.asarray(time_days, dtype=float)
+    if t.size == 0:
+        return np.zeros(0, dtype=float)
+    values = np.asarray(bin_values, dtype=float).reshape(-1)
+    if values.size == 0:
+        values = np.zeros(PROFILE_BIN_COUNT, dtype=float)
+    elif values.size != PROFILE_BIN_COUNT:
+        values = BASE.align_profile_to_time_length(values, PROFILE_BIN_COUNT)
+    values = np.where(np.isfinite(values), values, 0.0)
+    (break_day_1,) = resolve_profile_break_days(profile_break_days)
+    profile = np.full(t.shape, float(values[0]), dtype=float)
+    profile = np.where(t >= break_day_1 - 1e-9, float(values[1]), profile)
+    return np.asarray(profile, dtype=float)
+
+
 def candidate_project_roots() -> List[str]:
     roots = []
     for attr in ["PROJECT_ROOT", "DEFAULT_PROJECT_ROOT", "LOCAL_PROJECT_ROOT"]:
         value = getattr(BASE, attr, None)
         if isinstance(value, str) and value not in roots:
             roots.append(value)
-    sibling_root = os.path.join(THIS_DIR, "NN_Pytorch_ExpEq_columns_only_v10")
+    sibling_root = os.path.join(THIS_DIR, "NN_Pytorch_ExpEq_columns_only_v12")
     if sibling_root not in roots:
         roots.append(sibling_root)
     return roots
@@ -480,7 +601,7 @@ def resolve_project_root(requested_root: str | None = None) -> str:
     searched = "\n".join(candidates)
     raise FileNotFoundError(
         "Could not find saved member checkpoints. "
-        "Run NN_ExpEq_columns_only_v10.py first so it writes the checkpoint paths listed in outputs/run_manifest.json.\n"
+        "Run NN_ExpEq_columns_only_v12.py first so it writes the checkpoint paths listed in outputs/run_manifest.json.\n"
         f"Searched:\n{searched}"
     )
 
@@ -493,7 +614,7 @@ def resolve_member_model_dir(project_root: str) -> str:
     searched_text = "\n".join(searched)
     raise FileNotFoundError(
         "Could not find saved member checkpoints for the interactive app. "
-        "Run NN_ExpEq_columns_only_v10.py first and then use the checkpoint directory recorded in outputs/run_manifest.json.\n"
+        "Run NN_ExpEq_columns_only_v12.py first and then use the checkpoint directory recorded in outputs/run_manifest.json.\n"
         f"Searched:\n{searched_text}"
     )
 
@@ -590,7 +711,69 @@ def format_spec_value(value: float, spec: Dict[str, float]) -> str:
 
 @lru_cache(maxsize=1)
 def load_training_dataframe() -> pd.DataFrame:
-    return pd.read_csv(BASE.DATA_PATH)
+    """Load the training DataFrame and apply any base-module row exclusions.
+
+    The interactive UI builds numeric slider specifications from the training data.  To
+    ensure that the slider ranges reflect only the rows that would be used during
+    training and inference, we need to exclude any rows that the base training
+    script excludes via EXCLUDED_TRAIN_PAIR_IDS and EXCLUDED_TRAIN_COL_IDS.  Without
+    this filter, values from excluded pairs or columns can widen the min/max
+    estimates and produce unrealistic UI ranges.  The base script provides
+    `apply_training_pair_exclusions(df)` for this purpose, so we delegate to it
+    here when available.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered training DataFrame suitable for deriving input specs.
+    """
+    df = pd.read_csv(BASE.DATA_PATH)
+    # Apply training exclusions so that slider ranges reflect only included rows.
+    # The exclusions remove rows whose project_sample_id or project_col_id are
+    # flagged in the EXCLUDED_TRAIN_PAIR_IDS and EXCLUDED_TRAIN_COL_IDS sets in
+    # the base training script.  These exclusions are important for realistic
+    # min/max values on numeric sliders.
+    try:
+        if hasattr(BASE, "apply_training_pair_exclusions"):
+            df, _summary = BASE.apply_training_pair_exclusions(df)
+    except Exception:
+        # Silently ignore if the exclusion function is not available or fails.
+        pass
+    try:
+        if hasattr(BASE, "append_reconstructed_sequence_columns"):
+            df = BASE.append_reconstructed_sequence_columns(df)
+    except Exception:
+        pass
+    computed_static_features = set(getattr(BASE, "_COMPUTED_STATIC_FEATURES", set()))
+    if "terminal_slope_rate" in computed_static_features and "terminal_slope_rate" not in df.columns:
+        terminal_rates: List[float] = []
+        aligned_builder = getattr(BASE, "reconstruct_aligned_dynamic_sequences_for_row", None)
+        terminal_rate_fn = getattr(BASE, "compute_terminal_slope_rate", None)
+        for _, row in df.iterrows():
+            terminal_rate = float("nan")
+            try:
+                if callable(aligned_builder):
+                    dynamic = aligned_builder(row, min_points=6)
+                    if dynamic is not None and callable(terminal_rate_fn):
+                        terminal_rate = float(
+                            terminal_rate_fn(
+                                np.asarray(dynamic.get("time_days_aligned", []), dtype=float),
+                                np.asarray(dynamic.get("recovery_aligned", []), dtype=float),
+                            )
+                        )
+                if not np.isfinite(terminal_rate) and callable(terminal_rate_fn):
+                    terminal_rate = float(
+                        terminal_rate_fn(
+                            BASE.parse_listlike(row.get(BASE.TIME_COL_COLUMNS, np.nan)),
+                            BASE.parse_listlike(row.get(BASE.TARGET_COLUMNS, np.nan)),
+                        )
+                    )
+            except Exception:
+                terminal_rate = float("nan")
+            terminal_rates.append(float(terminal_rate) if np.isfinite(terminal_rate) else 0.0)
+        df = df.copy()
+        df["terminal_slope_rate"] = terminal_rates
+    return df
 
 
 def fit_grouped_modal_regression(
@@ -807,6 +990,8 @@ def current_control_bounds(
     residual_component_id = predictor_component_id(RESIDUAL_CPY_COL)
     diameter_component_id = predictor_component_id("column_inner_diameter_m")
     p80_component_id = predictor_component_id("material_size_p80_in")
+    catalyst_start_component_id = "catalyst-addition-start-day"
+    break_component_ids = profile_break_component_ids()
 
     if component_id == acid_component_id:
         acid_spec = input_specs[ACID_SOLUBLE_COL]
@@ -821,6 +1006,36 @@ def current_control_bounds(
     elif component_id == diameter_component_id:
         p80_value = float(resolved_control_values.get(p80_component_id, float(input_specs["material_size_p80_in"]["default"])))
         min_value = diameter_ratio_guardrail_min(p80_value, input_specs)
+    elif component_id in break_component_ids:
+        break_idx = break_component_ids.index(component_id)
+        catalyst_start_value = float(
+            resolved_control_values.get(
+                catalyst_start_component_id,
+                float(control_specs_by_id[catalyst_start_component_id]["default"]),
+            )
+        )
+        min_gap = float(spec.get("step", INPUT_ARROW_STEPS.get("profile-break-day", 50.0)))
+        if break_idx == 0:
+            min_value = max(min_value, catalyst_start_value)
+        else:
+            previous_component_id = break_component_ids[break_idx - 1]
+            previous_value = float(
+                resolved_control_values.get(
+                    previous_component_id,
+                    float(control_specs_by_id[previous_component_id]["default"]),
+                )
+            )
+            min_value = max(min_value, previous_value + min_gap)
+        if break_idx + 1 < len(break_component_ids):
+            next_component_id = break_component_ids[break_idx + 1]
+            next_value = float(
+                resolved_control_values.get(
+                    next_component_id,
+                    float(control_specs_by_id[next_component_id]["default"]),
+                )
+            )
+            max_value = min(max_value, next_value - min_gap)
+        max_value = max(min_value, max_value)
 
     return round_control_value(float(min_value), MAX_CONTROL_DECIMALS), round_control_value(float(max_value), MAX_CONTROL_DECIMALS)
 
@@ -1153,76 +1368,118 @@ def build_numeric_slider_specs(df: pd.DataFrame, columns: List[str]) -> Dict[str
     return specs
 
 
-def build_weekly_catalyst_spec(df: pd.DataFrame) -> Dict[str, float]:
+def build_profile_bin_defaults(
+    df: pd.DataFrame,
+    value_column: str,
+    spec: Dict[str, float],
+    profile_break_days: Any,
+) -> List[float]:
+    samples: List[np.ndarray] = []
+    aligned_time_column = getattr(BASE, "ALIGNED_TIME_COL", "leach_duration_days_aligned")
+    fallback_default = float(spec["default"])
+    bin_ranges = profile_bin_ranges(profile_break_days)
+    for _, row in df.iterrows():
+        t = BASE.parse_listlike(row.get(aligned_time_column, np.nan))
+        values = BASE.parse_listlike(row.get(value_column, np.nan))
+        n = min(t.size, values.size)
+        if n < 2:
+            continue
+        t = np.asarray(t[:n], dtype=float)
+        values = np.asarray(values[:n], dtype=float)
+        valid = np.isfinite(t) & np.isfinite(values)
+        if int(np.sum(valid)) < 2:
+            continue
+        t = t[valid]
+        values = values[valid]
+        last_day = float(np.nanmax(t)) if t.size > 0 else np.nan
+        if not np.isfinite(last_day) or last_day < 0.0:
+            continue
+        row_defaults: List[float] = []
+        for start_day, end_day in bin_ranges:
+            if end_day is None:
+                mask = t >= start_day - 1e-9
+                probe_day = max(start_day, min(last_day, start_day))
+            else:
+                mask = (t >= start_day - 1e-9) & (t < end_day - 1e-9)
+                probe_day = min(last_day, 0.5 * (start_day + end_day))
+            interval_values = values[mask & np.isfinite(values)]
+            if interval_values.size > 0:
+                row_defaults.append(float(np.nanmedian(interval_values)))
+            elif last_day >= start_day - 1e-9:
+                row_defaults.append(
+                    float(np.interp(probe_day, t, values, left=float(values[0]), right=float(values[-1])))
+                )
+            else:
+                row_defaults.append(float("nan"))
+        samples.append(np.asarray(row_defaults, dtype=float))
+
+    if len(samples) == 0:
+        return [fallback_default for _ in range(PROFILE_BIN_COUNT)]
+
+    stacked = np.vstack(samples)
+    defaults = np.nanmedian(stacked, axis=0)
+    defaults = np.where(np.isfinite(defaults), defaults, fallback_default)
+    return [
+        normalize_control_value(float(v), spec)
+        for v in np.asarray(defaults, dtype=float)
+    ]
+
+
+def build_catalyst_addition_mg_l_spec(df: pd.DataFrame) -> Dict[str, float]:
+    """Build the UI spec for the reconstructed catalyst feed curve (mg/L)."""
     status_col = BASE.STATUS_COL_PRIMARY if BASE.STATUS_COL_PRIMARY in df.columns else BASE.STATUS_COL_FALLBACK
-    values_gt_week: List[float] = []
+    values_mg_l: List[float] = []
+    reconstructed_col = getattr(BASE, "CATALYST_ADDITION_RECON_COL", "catalyst_addition_mg_l_reconstructed")
     for _, row in df.iterrows():
         status = BASE.normalize_status(row.get(status_col, ""))
         if status != "Catalyzed":
             continue
-        t_raw = BASE.parse_listlike(row.get(BASE.TIME_COL_COLUMNS, np.nan))
-        c_raw = BASE.parse_listlike(row.get(BASE.CATALYST_CUM_COL, np.nan))
-        valid = np.isfinite(t_raw) & np.isfinite(c_raw)
-        t = np.asarray(t_raw[valid], dtype=float)
-        c = np.asarray(c_raw[valid], dtype=float)
-        if t.size < 2:
-            continue
-        order = np.argsort(t)
-        t = t[order]
-        c = c[order]
-        t_unique, inv = np.unique(t, return_inverse=True)
-        c_unique = np.full(t_unique.shape, np.nan, dtype=float)
-        for i, j in enumerate(inv):
-            c_unique[j] = c[i] if not np.isfinite(c_unique[j]) else max(c_unique[j], c[i])
-        c_clean = BASE.clean_cumulative_profile(c_unique, force_zero=False)
-        weekly_kg_week, _ = BASE.average_weekly_catalyst_from_recent_history(
-            time_days=t_unique,
-            catalyst_cum=c_clean,
-            window_days=float(BASE.CONFIG.get("catalyst_extension_window_days", 21.0)),
-            week_days=7.0,
-        )
-        if np.isfinite(weekly_kg_week):
-            values_gt_week.append(float(weekly_kg_week) * 1000.0)
 
-    if len(values_gt_week) == 0:
+        cat_add_raw = BASE.parse_listlike(row.get(reconstructed_col, np.nan))
+        cat_add_finite = cat_add_raw[np.isfinite(cat_add_raw) & (cat_add_raw > 0.0)]
+        if cat_add_finite.size > 0:
+            values_mg_l.extend(cat_add_finite.tolist())
+        else:
+            _dosage_col = getattr(BASE, "CATALYST_DOSAGE_COL", None)
+            dosage_scalar = (
+                float(pd.to_numeric(row.get(_dosage_col, np.nan), errors="coerce"))
+                if _dosage_col is not None and pd.notna(row.get(_dosage_col))
+                else np.nan
+            )
+            if np.isfinite(dosage_scalar) and dosage_scalar > 0.0:
+                values_mg_l.append(dosage_scalar)
+
+    CATALYST_MIN_MG_L = 10.0
+    CATALYST_DEFAULT_MG_L = 100.0
+    if len(values_mg_l) == 0:
         return finalize_numeric_spec(
-            {"min": 0.0, "max": 50.0, "default": 5.0, "step": 0.5},
-            step_value=INPUT_ARROW_STEPS["weekly-catalyst-gt-week"],
-            force_min_zero=True,
+            {"min": CATALYST_MIN_MG_L, "max": 200.0, "default": CATALYST_DEFAULT_MG_L, "step": 1.0},
+            step_value=INPUT_ARROW_STEPS["catalyst-addition-mg-l"],
         )
-    arr = np.asarray(values_gt_week, dtype=float)
-    min_value = float(np.nanmin(arr))
-    max_value = float(np.nanmax(arr))
-    if max_value <= min_value:
-        max_value = min_value + 1.0
+    arr = np.asarray(values_mg_l, dtype=float)
+    min_value = CATALYST_MIN_MG_L
+    max_value = max(float(np.nanpercentile(arr, 99)), CATALYST_DEFAULT_MG_L + 10.0)
     return finalize_numeric_spec(
         {
-            "min": max(0.0, min_value),
+            "min": min_value,
             "max": max_value,
-            "default": float(np.nanmedian(arr)),
-            "step": nice_step(max(0.0, min_value), max_value),
+            "default": CATALYST_DEFAULT_MG_L,
+            "step": nice_step(min_value, max_value),
         },
-        step_value=INPUT_ARROW_STEPS["weekly-catalyst-gt-week"],
-        force_min_zero=True,
+        step_value=INPUT_ARROW_STEPS["catalyst-addition-mg-l"],
     )
+
+
+# Keep backward-compatible alias for any external callers
+def build_weekly_catalyst_spec(df: pd.DataFrame) -> Dict[str, float]:
+    return build_catalyst_addition_mg_l_spec(df)
 
 
 def build_irrigation_rate_spec(df: pd.DataFrame) -> Dict[str, float]:
     values_l_m2_h: List[float] = []
+    reconstructed_col = getattr(BASE, "IRRIGATION_RATE_RECON_COL", "irrigation_rate_l_m2_h_reconstructed")
     for _, row in df.iterrows():
-        t_raw = BASE.parse_listlike(row.get(BASE.TIME_COL_COLUMNS, np.nan))
-        l_raw = BASE.parse_listlike(row.get(BASE.LIXIVIANT_CUM_COL, np.nan))
-        feed_mass_kg = BASE.scalar_from_maybe_array(row.get(BASE.FEED_MASS_COL, np.nan))
-        column_inner_diameter_m = BASE.scalar_from_maybe_array(row.get("column_inner_diameter_m", np.nan))
-        t_clean, l_clean = BASE.prepare_cumulative_profile_with_time(t_raw, l_raw, force_zero=False)
-        if t_clean.size < 2:
-            continue
-        rate_profile = BASE.convert_lixiviant_cum_to_irrigation_rate_l_m2_h(
-            time_days=t_clean,
-            cumulative_lixiviant_m3_t=l_clean,
-            feed_mass_kg=feed_mass_kg,
-            column_inner_diameter_m=column_inner_diameter_m,
-        )
+        rate_profile = BASE.parse_listlike(row.get(reconstructed_col, np.nan))
         positive = rate_profile[np.isfinite(rate_profile) & (rate_profile > 0.0)]
         if positive.size > 0:
             values_l_m2_h.append(float(np.nanmedian(positive)))
@@ -1306,6 +1563,7 @@ def build_main_editable_columns() -> List[str]:
         if c not in TOP_DISPLAY_COLUMNS
         and not c.startswith("grouped_")
         and c not in DERIVED_MODEL_COLUMNS
+        and c not in INTERNAL_ONLY_MODEL_COLUMNS
         and c not in {FE_HEAD_COL, CU_HEAD_COL, CYANIDE_SOLUBLE_COL}
     ]
     return ordered_unique(prefix_columns + active_non_grouped)
@@ -1313,6 +1571,57 @@ def build_main_editable_columns() -> List[str]:
 
 MAIN_EDITABLE_COLUMNS = build_main_editable_columns()
 EDITABLE_INPUT_COLUMNS = ordered_unique(TOP_DISPLAY_COLUMNS + MAIN_EDITABLE_COLUMNS + GROUPED_MODEL_COLUMNS)
+OPTIONAL_EDITABLE_INPUT_COLUMNS = [
+    c
+    for c in EDITABLE_INPUT_COLUMNS
+    if c in set(getattr(BASE, "OPTIONAL_STATIC_PREDICTOR_COLUMNS", set()))
+]
+AUTO_ESTIMATED_INPUT_ONLY_COLUMNS = {getattr(BASE, "FEED_MASS_COL", "feed_mass_kg")}
+
+
+def validate_base_compatibility() -> None:
+    """Fail fast when the base v12 feature schema drifts beyond app coverage."""
+    editable_auto_estimated = sorted(AUTO_ESTIMATED_INPUT_ONLY_COLUMNS.intersection(EDITABLE_INPUT_COLUMNS))
+    if editable_auto_estimated:
+        raise RuntimeError(
+            "Auto-estimated model inputs must not be exposed as user-editable controls: "
+            + ", ".join(editable_auto_estimated)
+        )
+
+    known_static_columns = (
+        set(EDITABLE_INPUT_COLUMNS)
+        | set(DERIVED_MODEL_COLUMNS)
+        | set(INTERNAL_ONLY_MODEL_COLUMNS)
+        | {FE_HEAD_COL, CU_HEAD_COL, CYANIDE_SOLUBLE_COL}
+        | set(GROUPED_MODEL_COLUMNS)
+        | set(GROUPED_INACTIVE_COLUMNS)
+    )
+    missing_static = [
+        column
+        for column in BASE.STATIC_PREDICTOR_COLUMNS
+        if column not in known_static_columns
+    ]
+    if missing_static:
+        raise RuntimeError(
+            "NN_ExpEq_columns_only_v12_iplot.py does not know how to supply these base "
+            "STATIC_PREDICTOR_COLUMNS: "
+            + ", ".join(missing_static)
+        )
+
+    missing_input_only = [
+        column
+        for column in getattr(BASE, "INPUT_ONLY_COLUMNS", [])
+        if column not in EDITABLE_INPUT_COLUMNS and column not in AUTO_ESTIMATED_INPUT_ONLY_COLUMNS
+    ]
+    if missing_input_only:
+        raise RuntimeError(
+            "NN_ExpEq_columns_only_v12_iplot.py does not know how to supply these base "
+            "INPUT_ONLY_COLUMNS: "
+            + ", ".join(missing_input_only)
+        )
+
+
+validate_base_compatibility()
 
 
 def checkpoint_model_kwargs(ckpt: Dict[str, Any]) -> Dict[str, Any]:
@@ -1354,7 +1663,7 @@ def load_saved_member_models(project_root: str) -> Tuple[List[Dict[str, Any]], s
     if len(model_paths) == 0:
         raise FileNotFoundError(
             "No member checkpoints were found. "
-            "Run NN_ExpEq_columns_only_v10.py first to generate them."
+            "Run NN_ExpEq_columns_only_v12.py first to generate them."
         )
 
     checkpoint_loader = getattr(BASE, "load_torch_checkpoint", None)
@@ -1386,7 +1695,7 @@ def load_saved_member_models(project_root: str) -> Tuple[List[Dict[str, Any]], s
                 continue
             raise RuntimeError(
                 f"Checkpoint architecture mismatch for {path}. "
-                "Re-run NN_ExpEq_columns_only_v10.py to regenerate the saved member models with the current model structure."
+                "Re-run NN_ExpEq_columns_only_v12.py to regenerate the saved member models with the current model structure."
             ) from exc
         model.eval()
         scaler_scale = np.asarray(ckpt["scaler_scale"], dtype=float)
@@ -1400,6 +1709,7 @@ def load_saved_member_models(project_root: str) -> Tuple[List[Dict[str, Any]], s
                 "cum_scale": float(ckpt["cum_scale"]),
                 "lix_scale": float(ckpt.get("lix_scale", 1.0)),
                 "irrigation_scale": float(ckpt.get("irrigation_scale", 1.0)),
+                "conc_scale": float(ckpt.get("conc_scale", 1.0)),
                 "imputer_statistics": np.asarray(ckpt["imputer_statistics"], dtype=float),
                 "scaler_mean": np.asarray(ckpt["scaler_mean"], dtype=float),
                 "scaler_scale": scaler_scale,
@@ -1409,7 +1719,7 @@ def load_saved_member_models(project_root: str) -> Tuple[List[Dict[str, Any]], s
         skipped_text = "\n".join(skipped_paths) if skipped_paths else model_dir
         raise RuntimeError(
             "No compatible saved member checkpoints were found for the current model structure. "
-            "Re-run NN_ExpEq_columns_only_v10.py to regenerate them. "
+            "Re-run NN_ExpEq_columns_only_v12.py to regenerate them. "
             f"Expected logic version: {base_logic_version!r}.\n"
             f"Skipped:\n{skipped_text}"
         )
@@ -1449,12 +1759,15 @@ def predict_member_curves(
     catalyst_cum: np.ndarray,
     lixiviant_cum: np.ndarray,
     irrigation_rate_l_m2_h: np.ndarray,
+    catalyst_start_day: float,
     control_time_days: np.ndarray | None = None,
+    catalyst_conc_col: np.ndarray | None = None,
 ) -> Dict[str, Any]:
     model = member["model"]
     cum_scale = max(float(member["cum_scale"]), 1e-6)
     lix_scale = max(float(member["lix_scale"]), 1e-6)
     irrigation_scale = max(float(member["irrigation_scale"]), 1e-6)
+    conc_scale = max(float(member.get("conc_scale", 1.0)), 1e-6)
     static_imputed_raw = np.asarray(static_raw, dtype=float).copy()
     imputer_statistics = np.asarray(member.get("imputer_statistics"), dtype=float)
     missing = ~np.isfinite(static_imputed_raw)
@@ -1482,14 +1795,34 @@ def predict_member_curves(
             dtype=torch.float32,
             device=BASE.device,
         )
+        c_ctrl = torch.zeros_like(t)
+        _conc_arr = np.asarray(catalyst_conc_col, dtype=float) if catalyst_conc_col is not None else np.zeros(len(time_days), dtype=float)
+        cat_conc = torch.as_tensor(_conc_arr / conc_scale, dtype=torch.float32, device=BASE.device)
+        catalyst_start_day_tensor = torch.as_tensor(float(catalyst_start_day), dtype=torch.float32, device=BASE.device)
         p_ctrl, p_cat, tau, temp, kappa, aging_strength, latent = model.predict_params(
             x,
             x_raw,
             x_input_only,
             catalyst_t_days=t,
             catalyst_cum_norm=c,
+            catalyst_conc_norm=cat_conc,
         )
-        pred_ctrl, pred_cat, states = model.curves_given_params(
+        pred_ctrl, _, _ = model.curves_given_params(
+            p_ctrl,
+            p_cat,
+            t,
+            c_ctrl,
+            l,
+            irr,
+            tau,
+            temp,
+            kappa,
+            aging_strength,
+            catalyst_start_day_override=catalyst_start_day_tensor,
+            latent_params=latent,
+            return_states=True,
+        )
+        _, pred_cat, cat_states = model.curves_given_params(
             p_ctrl,
             p_cat,
             t,
@@ -1500,6 +1833,7 @@ def predict_member_curves(
             temp,
             kappa,
             aging_strength,
+            catalyst_start_day_override=catalyst_start_day_tensor,
             latent_params=latent,
             return_states=True,
         )
@@ -1547,17 +1881,18 @@ def predict_member_curves(
                 temp,
                 kappa,
                 aging_strength,
+                catalyst_start_day_override=catalyst_start_day_tensor,
                 latent_params=latent,
             )
             if same_plot_grid:
                 pred_ctrl = pred_ctrl_plot
-                pred_cat = torch.maximum(pred_cat, pred_ctrl_plot)
 
     out = {
         "control_pred": pred_ctrl.detach().cpu().numpy(),
         "catalyzed_pred": pred_cat.detach().cpu().numpy(),
         "tau_offset_days": float(tau.squeeze().detach().cpu().item()),
-        "effective_tau_days": float(states["effective_tau_days"].squeeze().detach().cpu().item()),
+        "tau_days": float(cat_states["effective_tau_days"].squeeze().detach().cpu().item()),
+        "effective_tau_days": float(cat_states["effective_tau_days"].squeeze().detach().cpu().item()),
         "temp_days": float(temp.squeeze().detach().cpu().item()),
         "kappa": float(kappa.squeeze().detach().cpu().item()),
         "aging_strength": float(aging_strength.squeeze().detach().cpu().item()),
@@ -2076,13 +2411,27 @@ def resolve_internal_feed_mass(
     }
 
 
-def build_time_grid(max_day: float) -> np.ndarray:
+def build_time_grid(max_day: float, anchor_days: Tuple[float, ...] = ()) -> np.ndarray:
+    """Build the prediction time grid.
+
+    ``anchor_days`` is an optional sequence of day values that are always
+    inserted into the grid regardless of the regular step size.  This prevents
+    the catalyst-start-day discontinuity that arises when the start day falls
+    between two regular step points: without an anchor, the first grid point
+    after the start day already has N elapsed-catalyst-days accumulated, which
+    makes the delay_factor / catalyst_factor evaluate at an artificially high
+    level and produces a visible kink in the catalyzed curve.
+    """
     step_days = float(INTERACTIVE_PLOT_STEP_DAYS)
     max_day = float(np.clip(max_day, 100.0, 2500.0))
     grid = np.arange(0.0, max_day + step_days, step_days, dtype=float)
     grid = grid[grid <= max_day + 1e-9]
     if grid.size == 0 or abs(grid[-1] - max_day) > 1e-9:
         grid = np.append(grid, max_day)
+    for anchor in anchor_days:
+        a = float(anchor)
+        if 0.0 <= a <= max_day:
+            grid = np.append(grid, a)
     return np.unique(grid.astype(float))
 
 
@@ -2091,10 +2440,101 @@ def build_catalyst_cumulative_schedule(
     weekly_catalyst_gt_week: float,
     catalyst_addition_start_day: float,
 ) -> np.ndarray:
+    """Legacy helper – kept for backward compatibility.
+    Constructs a linear cumulative catalyst profile from a weekly addition rate
+    (g/t/week → kg/t linearly ramping after start_day).
+    Prefer build_catalyst_signals_from_dosage_mg_l for new code.
+    """
     weekly_kg_week = float(max(0.0, weekly_catalyst_gt_week)) / 1000.0
     start_day = float(np.clip(catalyst_addition_start_day, 0.0, 700.0))
     active_days = np.maximum(np.asarray(time_days, dtype=float) - start_day, 0.0)
     return (weekly_kg_week / 7.0) * active_days
+
+
+def build_catalyst_signals_from_dosage_mg_l(
+    time_days: np.ndarray,
+    catalyst_addition_mg_l: float | np.ndarray,
+    catalyst_addition_start_day: float,
+    lixiviant_cum_m3_t: np.ndarray,
+    feed_mass_kg: float,
+    column_inner_diameter_m: float,
+    column_height_m: float,
+    irrigation_rate_l_m2_h: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    """Construct both catalyst dynamic signals from a user-supplied dosage profile.
+
+    Parameters
+    ----------
+    catalyst_addition_mg_l : scalar or full feed-concentration profile (mg/L).
+        Scalars are expanded to a constant post-start profile; arrays are aligned
+        to the model time grid and zeroed before catalyst_addition_start_day.
+    catalyst_addition_start_day : day at which catalyst addition begins.
+    lixiviant_cum_m3_t : cumulative lixiviant profile (m³/t).
+    feed_mass_kg, column_inner_diameter_m, column_height_m : column geometry.
+    irrigation_rate_l_m2_h : irrigation rate profile (L/m²/h).
+
+    Returns
+    -------
+    dict with keys:
+        'catalyst_cum'        : cumulative catalyst (kg/t) – Signal 1
+        'catalyst_conc_col'   : CSTR column concentration (mg/L) – Signal 2
+        'catalyst_addition_mg_l_vec' : feed concentration vector (mg/L)
+    """
+    t = np.asarray(time_days, dtype=float)
+    start_day = float(np.clip(catalyst_addition_start_day, 0.0, 700.0))
+
+    dosage_raw = np.asarray(catalyst_addition_mg_l, dtype=float)
+    if dosage_raw.ndim == 0 or dosage_raw.size == 1:
+        dosage = float(max(0.0, float(dosage_raw.reshape(-1)[0] if dosage_raw.size > 0 else 0.0)))
+        C_feed = np.where(t >= start_day - 1e-9, dosage, 0.0)
+    else:
+        C_feed = BASE.align_profile_to_time_length(dosage_raw, t.size)
+        C_feed = np.where(np.isfinite(C_feed), C_feed, 0.0)
+        C_feed = np.where(t >= start_day - 1e-9, np.clip(C_feed, 0.0, None), 0.0)
+
+    # ---- Signal 1: cumulative catalyst (kg/t) ----
+    # ΔV_L = Δ(lixiviant_cum_m3_t) × feed_mass_kg  (m³/t × kg = L, since feed_t = kg/1000, ×1000 = m³_abs, ×1000=L)
+    if lixiviant_cum_m3_t is not None and np.asarray(lixiviant_cum_m3_t).size == t.size:
+        lix = np.asarray(lixiviant_cum_m3_t, dtype=float)
+    else:
+        # Reconstruct from irrigation rate
+        area_m2 = np.pi * (float(column_inner_diameter_m) / 2.0) ** 2 if np.isfinite(float(column_inner_diameter_m)) else np.nan
+        if np.isfinite(area_m2) and area_m2 > 0.0 and np.asarray(irrigation_rate_l_m2_h).size == t.size:
+            flow_l_h = np.asarray(irrigation_rate_l_m2_h, dtype=float) * area_m2
+            dt = np.concatenate([[float(t[0])], np.diff(t)]) * 24.0  # hours
+            lix_abs_l = np.cumsum(flow_l_h * dt)
+            fm_kg = float(feed_mass_kg) if np.isfinite(float(feed_mass_kg)) and float(feed_mass_kg) > 0.0 else 1.0
+            lix = lix_abs_l / (fm_kg * 1000.0)  # L / (kg * 1000 L/m3 * (1/1000 t/kg)) = m3/t
+        else:
+            lix = np.zeros_like(t)
+
+    delta_lix = BASE.cumulative_interval_deltas(lix)
+    fm_kg = float(feed_mass_kg) if np.isfinite(float(feed_mass_kg)) and float(feed_mass_kg) > 0.0 else 1.0
+    # ΔV_L = delta_lix × feed_mass_kg  (m³/t × kg = m³ × (kg/1000 t/kg) = ... )
+    # Actually: m³/t × feed_mass_t × 1000 L/m³ = m³/t × (feed_mass_kg/1000) × 1000 = m³/t × feed_mass_kg
+    delta_v_l = delta_lix * fm_kg
+    cum_mg = np.cumsum(C_feed * delta_v_l)  # mg/L × L = mg
+    cum_kg_t = cum_mg / (fm_kg * 1e3)       # mg / (kg × 1000) = mg/g = 1e-3 kg/kg ... wait
+    # mg → kg: divide by 1e6
+    # per tonne ore: divide by (feed_mass_kg / 1000)
+    # net: mg / 1e6 / (feed_mass_kg / 1000) = mg / (feed_mass_kg × 1e3)
+    cum_kg_t = cum_mg / (fm_kg * 1e3)
+
+    # ---- Signal 2: CSTR column concentration (mg/L) ----
+    conc_col = BASE._compute_cstr_column_concentration(
+        time_days=t,
+        column_inner_diameter_m=column_inner_diameter_m,
+        column_height_m=column_height_m,
+        irrigation_rate_l_m2_h=irrigation_rate_l_m2_h,
+        cumulative_lixiviant_m3_t=np.asarray(lix, dtype=float),
+        catalyst_feed_conc_mg_l=np.asarray(C_feed, dtype=float),
+    )
+
+    return {
+        "catalyst_cum": np.asarray(cum_kg_t, dtype=float),
+        "catalyst_conc_col": np.asarray(conc_col, dtype=float),
+        "catalyst_addition_mg_l_vec": np.asarray(C_feed, dtype=float),
+    }
 
 
 def format_percentile_label(value: float) -> str:
@@ -2508,21 +2948,16 @@ def resolve_model_static_values(
 def predict_ensemble_curves(
     members: List[Dict[str, Any]],
     static_values: Dict[str, float],
-    weekly_catalyst_gt_week: float,
     catalyst_addition_start_day: float,
-    irrigation_rate_l_m2_h: float,
+    profile_break_days: np.ndarray,
+    catalyst_profile_bins: np.ndarray,
+    irrigation_profile_bins: np.ndarray,
     confidence_interval_high: float,
     max_day: float,
 ) -> Dict[str, Any]:
-    time_days = build_time_grid(max_day)
-    weekly_kg_week = float(max(0.0, weekly_catalyst_gt_week)) / 1000.0
     catalyst_start_day = float(np.clip(catalyst_addition_start_day, 0.0, 700.0))
+    time_days = build_time_grid(max_day, anchor_days=(catalyst_start_day,))
     ci_state = confidence_interval_state(confidence_interval_high)
-    catalyst_cum = build_catalyst_cumulative_schedule(
-        time_days=time_days,
-        weekly_catalyst_gt_week=weekly_catalyst_gt_week,
-        catalyst_addition_start_day=catalyst_start_day,
-    )
     static_raw, input_only_raw = build_model_input_arrays(static_values)
     input_only_idx = {name: idx for idx, name in enumerate(BASE.INPUT_ONLY_COLUMNS)}
     feed_mass_kg = (
@@ -2531,9 +2966,31 @@ def predict_ensemble_curves(
         else np.nan
     )
     column_inner_diameter_m = float(static_values.get("column_inner_diameter_m", np.nan))
+    column_height_m = float(static_values.get("column_height_m", np.nan))
+    resolved_break_days = resolve_catalyst_profile_break_days(
+        profile_break_days,
+        catalyst_start_day,
+    )
+    resolved_catalyst_bins = BASE.align_profile_to_time_length(
+        np.asarray(catalyst_profile_bins, dtype=float).reshape(-1),
+        PROFILE_BIN_COUNT,
+    )
+    resolved_irrigation_bins = BASE.align_profile_to_time_length(
+        np.asarray(irrigation_profile_bins, dtype=float).reshape(-1),
+        PROFILE_BIN_COUNT,
+    )
+    irrigation_input_profile = np.clip(
+        build_piecewise_profile_from_bins(
+            time_days=time_days,
+            bin_values=resolved_irrigation_bins,
+            profile_break_days=resolved_break_days,
+        ),
+        0.0,
+        None,
+    )
     lixiviant_cum = BASE.build_cumulative_lixiviant_from_irrigation_rate(
         time_days=time_days,
-        irrigation_rate_l_m2_h=float(max(0.0, irrigation_rate_l_m2_h)),
+        irrigation_rate_l_m2_h=np.asarray(irrigation_input_profile, dtype=float),
         feed_mass_kg=feed_mass_kg,
         column_inner_diameter_m=column_inner_diameter_m,
     )
@@ -2543,6 +3000,28 @@ def predict_ensemble_curves(
         feed_mass_kg=feed_mass_kg,
         column_inner_diameter_m=column_inner_diameter_m,
     )
+    catalyst_input_profile = np.clip(
+        build_piecewise_profile_from_bins(
+            time_days=time_days,
+            bin_values=resolved_catalyst_bins,
+            profile_break_days=resolved_break_days,
+        ),
+        0.0,
+        None,
+    )
+    signals = build_catalyst_signals_from_dosage_mg_l(
+        time_days=time_days,
+        catalyst_addition_mg_l=np.asarray(catalyst_input_profile, dtype=float),
+        catalyst_addition_start_day=catalyst_start_day,
+        lixiviant_cum_m3_t=lixiviant_cum,
+        feed_mass_kg=feed_mass_kg,
+        column_inner_diameter_m=column_inner_diameter_m,
+        column_height_m=column_height_m,
+        irrigation_rate_l_m2_h=irrigation_profile,
+    )
+    catalyst_cum = signals["catalyst_cum"]
+    catalyst_conc_col = signals["catalyst_conc_col"]
+    catalyst_addition_profile = signals["catalyst_addition_mg_l_vec"]
     ctrl_cap, cat_cap = BASE.compute_sample_leach_caps(
         cu_oxides_equiv=float(static_values.get(OXIDES_EQUIV_COL, np.nan)),
         cu_secondary_equiv=float(static_values.get(SECONDARY_SULFIDES_EQUIV_COL, np.nan)),
@@ -2550,20 +3029,47 @@ def predict_ensemble_curves(
         material_size_p80_in=float(static_values.get("material_size_p80_in", np.nan)),
     )
 
-    member_preds = []
+    member_preds: List[Dict[str, Any]] = []
+    # Generate predictions for each ensemble member and keep only members whose
+    # effective tau day is finite. This matches the base v12 interpretation of
+    # tau as the catalyst-response day on the selected schedule.
     for member in members:
-        member_preds.append(
-            predict_member_curves(
-                member=member,
-                static_raw=static_raw,
-                input_only_raw=input_only_raw,
-                time_days=time_days,
-                catalyst_cum=catalyst_cum,
-                lixiviant_cum=lixiviant_cum,
-                irrigation_rate_l_m2_h=irrigation_profile,
-                control_time_days=time_days,
-            )
+        pred_curves = predict_member_curves(
+            member=member,
+            static_raw=static_raw,
+            input_only_raw=input_only_raw,
+            time_days=time_days,
+            catalyst_cum=catalyst_cum,
+            lixiviant_cum=lixiviant_cum,
+            irrigation_rate_l_m2_h=irrigation_profile,
+            catalyst_start_day=catalyst_start_day,
+            control_time_days=time_days,
+            catalyst_conc_col=catalyst_conc_col,
         )
+        # Keep only members with a finite effective tau day, matching the
+        # deployed base-script interpretation of tau as the catalyst-response day.
+        tau_val = pred_curves.get("tau_days") if isinstance(pred_curves, dict) else None
+        if tau_val is None or not np.isfinite(tau_val):
+            continue
+        member_preds.append(pred_curves)
+    # If all members were skipped due to invalid tau values, fall back to the
+    # first available member so that the ensemble still produces a prediction.
+    # This ensures that the mean calculations below always have at least one
+    # entry to work with, albeit using a single model instead of an ensemble.
+    if len(member_preds) == 0 and len(members) > 0:
+        pred_curves = predict_member_curves(
+            member=members[0],
+            static_raw=static_raw,
+            input_only_raw=input_only_raw,
+            time_days=time_days,
+            catalyst_cum=catalyst_cum,
+            lixiviant_cum=lixiviant_cum,
+            irrigation_rate_l_m2_h=irrigation_profile,
+            catalyst_start_day=catalyst_start_day,
+            control_time_days=time_days,
+            catalyst_conc_col=catalyst_conc_col,
+        )
+        member_preds.append(pred_curves)
 
     ctrl_stack = np.vstack([p["control_pred"] for p in member_preds])
     cat_stack = np.vstack([p["catalyzed_pred"] for p in member_preds])
@@ -2591,19 +3097,35 @@ def predict_ensemble_curves(
     else:
         ctrl_p10, ctrl_p90 = ctrl_p10_raw, ctrl_p90_raw
         cat_p10, cat_p90 = cat_p10_raw, cat_p90_raw
+    # Helper to compute the mean of a list, ignoring NaN or infinite values.
+    def _safe_mean(values: List[float]) -> float:
+        finite_vals = [v for v in values if np.isfinite(v)]
+        if not finite_vals:
+            return float("nan")
+        return float(np.mean(finite_vals))
+
     return {
         "time_days": time_days,
-        "weekly_catalyst_gt_week": float(weekly_catalyst_gt_week),
-        "weekly_catalyst_kg_week": weekly_kg_week,
         "catalyst_addition_start_day": catalyst_start_day,
+        "profile_break_days": np.asarray(resolved_break_days, dtype=float),
+        "catalyst_profile_bins_mg_l": np.asarray(resolved_catalyst_bins, dtype=float),
+        "irrigation_profile_bins_l_m2_h": np.asarray(resolved_irrigation_bins, dtype=float),
         "confidence_interval_high": ci_state["interval_high"],
         "pi_low": ci_state["pi_low"],
         "pi_high": ci_state["pi_high"],
         "band_label": ci_state["band_label"],
-        "cumulative_catalyst_addition_kg_t": catalyst_cum,
+        "cumulative_active_catalyst_kg_t": catalyst_cum,
         "cumulative_lixiviant_m3_t": lixiviant_cum,
         "irrigation_rate_l_m2_h": irrigation_profile,
-        "irrigation_rate_input_l_m2_h": float(max(0.0, irrigation_rate_l_m2_h)),
+        "irrigation_rate_l_m2_h_reconstructed": irrigation_profile,
+        "catalyst_addition_mg_l_reconstructed": catalyst_addition_profile,
+        "irrigation_rate_l_m2_h_input_curve": irrigation_input_profile,
+        "catalyst_addition_mg_l_input_curve": catalyst_input_profile,
+        "irrigation_rate_input_l_m2_h": (
+            float(np.nanmean(irrigation_input_profile[np.isfinite(irrigation_input_profile)]))
+            if np.any(np.isfinite(irrigation_input_profile))
+            else 0.0
+        ),
         "control_cap": float(ctrl_cap),
         "catalyzed_cap": float(cat_cap),
         "control_pred_mean": np.mean(ctrl_stack, axis=0),
@@ -2612,11 +3134,14 @@ def predict_ensemble_curves(
         "catalyzed_pred_mean": np.mean(cat_stack, axis=0),
         "catalyzed_pred_p10": cat_p10,
         "catalyzed_pred_p90": cat_p90,
-        "tau_offset_days_mean": float(np.mean([p["tau_offset_days"] for p in member_preds])),
-        "effective_tau_days_mean": float(np.mean([p["effective_tau_days"] for p in member_preds])),
-        "temp_days_mean": float(np.mean([p["temp_days"] for p in member_preds])),
-        "kappa_mean": float(np.mean([p["kappa"] for p in member_preds])),
-        "aging_strength_mean": float(np.mean([p.get("aging_strength", np.nan) for p in member_preds])),
+        "tau_offset_days_mean": _safe_mean([p["tau_offset_days"] for p in member_preds]),
+        "tau_days_mean": _safe_mean([p.get("tau_days", p["effective_tau_days"]) for p in member_preds]),
+        "effective_tau_days_mean": _safe_mean([p["effective_tau_days"] for p in member_preds]),
+        "temp_days_mean": _safe_mean([p["temp_days"] for p in member_preds]),
+        "kappa_mean": _safe_mean([p["kappa"] for p in member_preds]),
+        # Use a default of NaN for missing aging_strength values and compute
+        # the mean over valid entries only.
+        "aging_strength_mean": _safe_mean([p.get("aging_strength", float("nan")) for p in member_preds]),
         "n_members": int(len(member_preds)),
     }
 
@@ -2764,18 +3289,39 @@ def make_prediction_figure(pred: Dict[str, Any], max_day: float, theme: str = "d
         )
     )
 
+    catalyst_profile = np.asarray(pred["catalyst_addition_mg_l_reconstructed"], dtype=float)
+    irrigation_profile = np.asarray(pred["irrigation_rate_l_m2_h_reconstructed"], dtype=float)
+    profile_break_days = np.asarray(pred.get("profile_break_days", DEFAULT_PROFILE_BREAK_DAYS), dtype=float)
+    tau_day = float(pred.get("tau_days_mean", pred.get("effective_tau_days_mean", np.nan)))
+    tau_offset_day = float(pred.get("tau_offset_days_mean", np.nan))
+    catalyst_profile_peak = float(np.nanmax(catalyst_profile)) if catalyst_profile.size > 0 else 0.0
+    irrigation_profile_peak = float(np.nanmax(irrigation_profile)) if irrigation_profile.size > 0 else 0.0
+    break_text = " | ".join([f"day {day:.0f}" for day in profile_break_days]) if profile_break_days.size > 0 else "n/a"
     full_annotation_text = (
-        f"Catalyst used: {pred['weekly_catalyst_gt_week']:.2f} g/t/w"
+        f"Catalyst feed curve peak: {catalyst_profile_peak:.0f} mg/L"
         f"<br>Catalyst addition start day: {pred['catalyst_addition_start_day']:.0f}"
-        f"<br>Irrigation rate: {pred['irrigation_rate_input_l_m2_h']:.2f} L/h/m2"
+    )
+    full_annotation_text += (
+        f"<br>Tau offset mean: {tau_offset_day:.0f} days"
+        if np.isfinite(tau_offset_day)
+        else "<br>Tau offset mean: N/A"
+    )
+    full_annotation_text += (
+        f"<br>Effective tau mean: {tau_day:.0f} days"
+        if np.isfinite(tau_day)
+        else "<br>Effective tau mean: N/A"
+    )
+    full_annotation_text += (
+        f"<br>Irrigation curve peak: {irrigation_profile_peak:.2f} L/h/m2"
+        f"<br>Shared profile breaks: {break_text}"
         f"<br>Confidence band: {band_label}"
-        f"<br>Assumption: constant catalyst addition from selected start day"
-        f"<br>Assumption: constant irrigation over the plotted horizon"
+        f"<br>Assumption: catalyst and irrigation are shared breakpoint-defined step curves"
+        f"<br>Assumption: catalyst curve is zeroed before the selected catalyst start day"
         f"<br>Members loaded: {pred['n_members']}"
     )
     compact_annotation_text = (
         f"Confidence band: {band_label}"
-        f"<br>Catalyst addition start day: {pred['catalyst_addition_start_day']:.0f}"
+        f"<br>Catalyst schedule start day: {pred['catalyst_addition_start_day']:.0f}"
     )
     fig.add_annotation(
         x=0.01,
@@ -2795,7 +3341,7 @@ def make_prediction_figure(pred: Dict[str, Any], max_day: float, theme: str = "d
     fig.update_layout(
         template=str(theme_settings["template"]),
         title={
-            "text": "Interactive Ensemble Prediction (v10)",
+            "text": "Interactive Ensemble Prediction (v12)",
             "font": {"size": 24, "color": str(theme_settings["font_color"])},
         },
         autosize=True,
@@ -2818,7 +3364,7 @@ def make_prediction_figure(pred: Dict[str, Any], max_day: float, theme: str = "d
             "font": {"color": str(theme_settings["font_color"])},
         },
         meta={
-            "png_export_filename": "interactive_ensemble_prediction_v10_300dpi",
+            "png_export_filename": "interactive_ensemble_prediction_v12_300dpi",
             "png_export_annotation_full": full_annotation_text,
             "png_export_annotation_compact": compact_annotation_text,
             "png_export_theme": theme_key,
@@ -2854,6 +3400,14 @@ def make_prediction_figure(pred: Dict[str, Any], max_day: float, theme: str = "d
             line_width=1,
             line_dash="dash",
             line_color=str(theme_settings["vline_color"]),
+        )
+    if np.isfinite(tau_day) and 0.0 < float(tau_day) < float(max_day):
+        fig.add_vline(
+            x=float(tau_day),
+            line_width=1,
+            line_dash="dot",
+            line_color=CATALYZED_CURVE_COLOR,
+            opacity=0.75,
         )
     return fig
 
@@ -2960,7 +3514,7 @@ def make_display_figure(
                 trace.line.width = 2.5 if is_narrow else 2.75
     else:
         figure.update_layout(
-            title_text="Interactive Ensemble Prediction (v10)",
+            title_text="Interactive Ensemble Prediction (v12)",
             title_font_size=24,
             margin={"l": 62, "r": 24, "t": 66, "b": 56},
             legend={
@@ -3017,7 +3571,7 @@ def build_export_dataframes(
     catalyst_cumulative = np.interp(
         export_days,
         time_days,
-        np.asarray(pred["cumulative_catalyst_addition_kg_t"], dtype=float),
+        np.asarray(pred["cumulative_active_catalyst_kg_t"], dtype=float),
     )
     lixiviant_cumulative = np.interp(
         export_days,
@@ -3028,6 +3582,11 @@ def build_export_dataframes(
         export_days,
         time_days,
         np.asarray(pred["irrigation_rate_l_m2_h"], dtype=float),
+    )
+    catalyst_addition_profile = np.interp(
+        export_days,
+        time_days,
+        np.asarray(pred["catalyst_addition_mg_l_reconstructed"], dtype=float),
     )
     delta = catalyzed_mean - control_mean
     delta_normalized_pct = np.full_like(control_mean, np.nan)
@@ -3044,21 +3603,9 @@ def build_export_dataframes(
         {"section": "plot_settings", "parameter": "max_day", "label": "Max day", "value": float(max_day)},
         {
             "section": "plot_settings",
-            "parameter": "weekly_catalyst_gt_week",
-            "label": "Catalyst used (g/t/week)",
-            "value": float(pred["weekly_catalyst_gt_week"]),
-        },
-        {
-            "section": "plot_settings",
             "parameter": "catalyst_addition_start_day",
-            "label": "Catalyst addition start day",
+            "label": "Catalyst schedule start day",
             "value": float(pred["catalyst_addition_start_day"]),
-        },
-        {
-            "section": "plot_settings",
-            "parameter": "irrigation_rate_l_m2_h",
-            "label": "Irrigation rate (L/h/m2)",
-            "value": float(pred["irrigation_rate_input_l_m2_h"]),
         },
         {
             "section": "plot_settings",
@@ -3080,6 +3627,12 @@ def build_export_dataframes(
         },
         {
             "section": "response_latents",
+            "parameter": "tau_days_mean",
+            "label": "Tau mean (days)",
+            "value": float(pred.get("tau_days_mean", pred["effective_tau_days_mean"])),
+        },
+        {
+            "section": "response_latents",
             "parameter": "tau_offset_days_mean",
             "label": "Tau offset mean (days)",
             "value": float(pred["tau_offset_days_mean"]),
@@ -3088,7 +3641,7 @@ def build_export_dataframes(
             "section": "response_latents",
             "parameter": "effective_tau_days_mean",
             "label": "Effective tau mean (days)",
-            "value": float(pred["effective_tau_days_mean"]),
+            "value": float(pred.get("tau_days_mean", pred["effective_tau_days_mean"])),
         },
         {
             "section": "response_latents",
@@ -3109,6 +3662,44 @@ def build_export_dataframes(
             "value": float(pred["aging_strength_mean"]),
         },
     ]
+    profile_break_days = np.asarray(pred.get("profile_break_days", DEFAULT_PROFILE_BREAK_DAYS), dtype=float)
+    catalyst_profile_bins = np.asarray(pred.get("catalyst_profile_bins_mg_l", []), dtype=float)
+    irrigation_profile_bins = np.asarray(pred.get("irrigation_profile_bins_l_m2_h", []), dtype=float)
+    for idx, day in enumerate(profile_break_days):
+        inputs_rows.append(
+            {
+                "section": "profile_breaks",
+                "parameter": f"profile_break_day_{idx + 1}",
+                "label": "Profile break (day)" if idx == 0 else f"Profile break {idx + 1} (day)",
+                "value": float(day),
+            }
+        )
+    catalyst_bin_ranges = catalyst_profile_bin_ranges(
+        float(pred.get("catalyst_addition_start_day", 0.0)),
+        profile_break_days,
+    )
+    irrigation_bin_ranges = profile_bin_ranges(profile_break_days)
+    for idx, (start_day, end_day) in enumerate(irrigation_bin_ranges):
+        if idx < catalyst_profile_bins.size:
+            catalyst_bin_label = format_profile_bin_label(*catalyst_bin_ranges[idx])
+            inputs_rows.append(
+                {
+                    "section": "profile_bins",
+                    "parameter": f"catalyst_profile_bin_{idx}",
+                    "label": f"Catalyst profile bin {catalyst_bin_label} (mg/L)",
+                    "value": float(catalyst_profile_bins[idx]),
+                }
+            )
+        if idx < irrigation_profile_bins.size:
+            irrigation_bin_label = format_profile_bin_label(start_day, end_day)
+            inputs_rows.append(
+                {
+                    "section": "profile_bins",
+                    "parameter": f"irrigation_profile_bin_{idx}",
+                    "label": f"Irrigation profile bin {irrigation_bin_label} (L/h/m2)",
+                    "value": float(irrigation_profile_bins[idx]),
+                }
+            )
 
     for column in EDITABLE_INPUT_COLUMNS:
         inputs_rows.append(
@@ -3189,8 +3780,9 @@ def build_export_dataframes(
     predictions_df = pd.DataFrame(
         {
             "leach_duration_days": export_days,
-            "cumulative_catalyst_addition_kg_t": catalyst_cumulative,
+            "cumulative_active_catalyst_kg_t": catalyst_cumulative,
             "cumulative_lixiviant_m3_t": lixiviant_cumulative,
+            "catalyst_addition_mg_l_reconstructed": catalyst_addition_profile,
             "irrigation_rate_l_m2_h": irrigation_rate,
             "control_pred_mean_cu_recovery_pct": control_mean,
             "catalyzed_pred_mean_cu_recovery_pct": catalyzed_mean,
@@ -3268,13 +3860,98 @@ def build_prediction_summary(
         if np.isfinite(size_ratio_value)
         else f"(expected >= {size_ratio_limit_text})"
     )
+    # Build human‑readable summary of learned parameters. Convert the learned means
+    # to integer days only when the values are finite; otherwise show "N/A".
+    tau_offset_val = pred.get("tau_offset_days_mean")
+    effective_tau_val = pred.get("tau_days_mean", pred.get("effective_tau_days_mean"))
+    temp_days_val = pred.get("temp_days_mean")
+    kappa_val = pred.get("kappa_mean")
+    aging_val = pred.get("aging_strength_mean")
+    tau_offset_text = (
+        f"{int(round(tau_offset_val))} days"
+        if tau_offset_val is not None and np.isfinite(tau_offset_val)
+        else "N/A"
+    )
+    effective_tau_text = (
+        f"{int(round(effective_tau_val))} days"
+        if effective_tau_val is not None and np.isfinite(effective_tau_val)
+        else "N/A"
+    )
+    temp_days_text = (
+        f"{int(round(temp_days_val))} days"
+        if temp_days_val is not None and np.isfinite(temp_days_val)
+        else "N/A"
+    )
+    kappa_text = (
+        f"{kappa_val:.2f}"
+        if kappa_val is not None and np.isfinite(kappa_val)
+        else "N/A"
+    )
+    aging_text = (
+        f"{aging_val:.2f}"
+        if aging_val is not None and np.isfinite(aging_val)
+        else "N/A"
+    )
+    milestone_days = (250.0, 500.0, 1000.0, 1500.0, 2500.0)
+    time_days = np.asarray(pred.get("time_days", []), dtype=float)
+
+    def _format_milestone_values(values: Any, decimals: int, unit: str) -> str:
+        series = np.asarray(values, dtype=float)
+        if time_days.size == 0 or series.size != time_days.size:
+            return " | ".join([f"day {int(day)}: N/A" for day in milestone_days])
+        sampled = np.interp(milestone_days, time_days, series)
+        return " | ".join(
+            [f"day {int(day)}: {value:.{decimals}f} {unit}" for day, value in zip(milestone_days, sampled)]
+        )
+
+    catalyst_cum_milestones = _format_milestone_values(
+        pred.get("cumulative_active_catalyst_kg_t", []),
+        decimals=3,
+        unit="kg/t",
+    )
+    catalyst_dose_milestones = _format_milestone_values(
+        pred.get("catalyst_addition_mg_l_reconstructed", []),
+        decimals=1,
+        unit="mg/L",
+    )
+    lixiviant_cum_milestones = _format_milestone_values(
+        pred.get("cumulative_lixiviant_m3_t", []),
+        decimals=2,
+        unit="m3/t",
+    )
+    irrigation_milestones = _format_milestone_values(
+        pred.get("irrigation_rate_l_m2_h_reconstructed", pred.get("irrigation_rate_l_m2_h", [])),
+        decimals=2,
+        unit="L/h/m2",
+    )
+    catalyst_start_day = float(pred.get("catalyst_addition_start_day", 0.0))
+    profile_break_days = np.asarray(pred.get("profile_break_days", DEFAULT_PROFILE_BREAK_DAYS), dtype=float)
+    catalyst_profile_bins = np.asarray(pred.get("catalyst_profile_bins_mg_l", []), dtype=float)
+    irrigation_profile_bins = np.asarray(pred.get("irrigation_profile_bins_l_m2_h", []), dtype=float)
+    break_text = " | ".join([f"day {day:.0f}" for day in profile_break_days]) if profile_break_days.size > 0 else "n/a"
+    catalyst_bin_text = " | ".join(
+        [
+            f"{format_profile_bin_label(start_day, end_day)}: {value:.1f} mg/L"
+            for (start_day, end_day), value in zip(
+                catalyst_profile_bin_ranges(catalyst_start_day, profile_break_days),
+                catalyst_profile_bins,
+            )
+        ]
+    ) if catalyst_profile_bins.size > 0 else "n/a"
+    irrigation_bin_text = " | ".join(
+        [
+            f"{format_profile_bin_label(start_day, end_day)}: {value:.2f} L/h/m2"
+            for (start_day, end_day), value in zip(profile_bin_ranges(profile_break_days), irrigation_profile_bins)
+        ]
+    ) if irrigation_profile_bins.size > 0 else "n/a"
+
     summary_lines: List[Any] = [
         html.Div(
-            f"Tau offset mean: {int(pred['tau_offset_days_mean'])} days | "
-            f"Effective tau mean: {int(pred['effective_tau_days_mean'])} days | "
-            f"Temp mean: {int(pred['temp_days_mean'])} days | "
-            f"Kappa mean: {pred['kappa_mean']:.2f} | "
-            f"Aging strength mean: {pred['aging_strength_mean']:.2f}"
+            f"Tau offset mean: {tau_offset_text} | "
+            f"Effective tau mean: {effective_tau_text} | "
+            f"Temp mean: {temp_days_text} | "
+            f"Kappa mean: {kappa_text} | "
+            f"Aging strength mean: {aging_text}"
         ),
         html.Div(
             "Parameter meanings: Tau offset is the learned catalyst-response delay from the model, "
@@ -3286,14 +3963,38 @@ def build_prediction_summary(
             "strength showing how fast older catalyst additions lose effectiveness over time."
         ),
         html.Div(
-            f"Catalyzed curve assumption: constant catalyst addition starting at day "
-            f"{pred['catalyst_addition_start_day']:.0f}, using the selected weekly rate "
-            "converted internally to cumulative kg/t. Changing that schedule changes the active "
-            "catalyst inventory seen by the model."
+            "Model input decision: the network keeps consuming cumulative active catalyst plus the "
+            "CSTR catalyst concentration signal for checkpoint compatibility. The reconstructed "
+            "catalyst dosage curve is the authoritative upstream signal used to build both of those dynamics."
         ),
         html.Div(
-            f"Irrigation assumption: constant {pred['irrigation_rate_input_l_m2_h']:.2f} L/h/m2 "
-            "converted internally to cumulative lixiviant (m3/t) using feed mass and column diameter."
+            f"Shared profile break days: {break_text}"
+        ),
+        html.Div(
+            f"Catalyst profile assumption: piecewise-constant bins are applied over the shared break days, "
+            f"with bin 1 starting at the catalyst schedule start day {catalyst_start_day:.0f}. "
+            f"The catalyst profile is zero before that day. Bins: {catalyst_bin_text}"
+        ),
+        html.Div(
+            "Irrigation profile assumption: the shared piecewise-constant irrigation bins are integrated "
+            f"to cumulative lixiviant and affect both the control and catalyzed curves. Bins: {irrigation_bin_text}"
+        ),
+        html.Div(
+            "Catalyst profile scope: the catalyst-derived signals only affect the catalyzed curve; "
+            "the control curve still sees the same lixiviant and irrigation history but zero catalyst."
+        ),
+        html.Div(
+            f"Reconstructed catalyst_addition_mg_l on the plotted horizon: {catalyst_dose_milestones}"
+        ),
+        html.Div(
+            "Reconstructed cumulative_catalyst_addition_kg_t from catalyst dosage (mg/L), irrigation curve, "
+            f"and feed mass: {catalyst_cum_milestones}"
+        ),
+        html.Div(
+            f"Reconstructed irrigation_rate_l_m2_h on the plotted horizon: {irrigation_milestones}"
+        ),
+        html.Div(
+            f"Reconstructed cumulative_lixiviant_m3_t from irrigation curve and feed mass: {lixiviant_cum_milestones}"
         ),
         html.Div(
             f"Internal geometry values: Column volume {geometry_values.get('column_volume_m3', np.nan):.2f} m3 | "
@@ -3492,15 +4193,58 @@ def create_app(project_root: str) -> Dash:
         + [FE_INPUT_COL]
     )
     input_specs = build_numeric_slider_specs(df, spec_columns)
-    weekly_spec = build_weekly_catalyst_spec(df)
-    irrigation_spec = build_irrigation_rate_spec(df)
+    catalyst_profile_spec = build_weekly_catalyst_spec(df)
+    irrigation_profile_spec = build_irrigation_rate_spec(df)
+    profile_break_spec = finalize_numeric_spec(
+        {
+            "min": 0.0,
+            "max": float(BASE.CONFIG.get("ensemble_plot_target_day", 2500.0)),
+            "default": float(DEFAULT_PROFILE_BREAK_DAYS[0]),
+            "step": float(INPUT_ARROW_STEPS["profile-break-day"]),
+        },
+        step_value=INPUT_ARROW_STEPS["profile-break-day"],
+    )
+    shared_profile_break_component_ids = profile_break_component_ids()
+    catalyst_profile_component_ids = profile_bin_component_ids("catalyst-profile")
+    irrigation_profile_component_ids = profile_bin_component_ids("irrigation-profile")
+    profile_break_defaults = resolve_profile_break_days(
+        DEFAULT_PROFILE_BREAK_DAYS,
+        min_value=float(profile_break_spec["min"]),
+        max_value=float(profile_break_spec["max"]),
+        min_gap=float(profile_break_spec["step"]),
+    )
+    catalyst_profile_defaults = [
+        normalize_control_value(float(catalyst_profile_spec["default"]), catalyst_profile_spec)
+        for _ in range(PROFILE_BIN_COUNT)
+    ]
+    irrigation_profile_defaults = build_profile_bin_defaults(
+        df,
+        getattr(BASE, "IRRIGATION_RATE_RECON_COL", "irrigation_rate_l_m2_h_reconstructed"),
+        irrigation_profile_spec,
+        profile_break_defaults,
+    )
+    irrigation_profile_defaults = [
+        normalize_control_value(1.0, irrigation_profile_spec)
+        for _ in range(PROFILE_BIN_COUNT)
+    ]
+    optional_inputs_note = ""
+    if OPTIONAL_EDITABLE_INPUT_COLUMNS:
+        optional_labels = ", ".join(display_label(column) for column in OPTIONAL_EDITABLE_INPUT_COLUMNS)
+        optional_inputs_note = (
+            f" Optional, non-required base-script inputs currently shown: {optional_labels}. "
+            "They are safe to leave at their defaults when the user does not know them."
+        )
     helper_inputs_note = (
         "Acid soluble and residual chalcopyrite stay user-editable, while cyanide is auto-balanced so the three sum to 100%. "
-        "Fe % also stays user-editable. The app converts these inputs internally into the active model features before inference."
+        "Fe % also stays user-editable. The app converts these inputs internally into the active model features before inference. "
+        "Feed mass is not a user input; it is estimated from column volume and P80 with the calibrated Rosin-Rammler loading equation. "
+        "Time-series auxiliary signals such as PLS/feed ORP are handled internally and are not user inputs."
         if needs_fe_input()
         else "Acid soluble and residual chalcopyrite stay user-editable, while cyanide is auto-balanced so the three sum to 100%. "
-        "The app converts these inputs internally into the active model features before inference."
-    )
+        "The app converts these inputs internally into the active model features before inference. "
+        "Feed mass is not a user input; it is estimated from column volume and P80 with the calibrated Rosin-Rammler loading equation. "
+        "Time-series auxiliary signals such as PLS/feed ORP are handled internally and are not user inputs."
+    ) + optional_inputs_note
 
     default_ui_values = {column: float(input_specs[column]["default"]) for column in EDITABLE_INPUT_COLUMNS}
     default_ui_values, default_geometry_guardrail_state = apply_geometry_input_limits(default_ui_values, input_specs)
@@ -3530,11 +4274,14 @@ def create_app(project_root: str) -> Dash:
     )
     control_specs_by_id: Dict[str, Dict[str, float]] = {
         "max-day": max_day_spec,
-        "weekly-catalyst-gt-week": dict(weekly_spec),
         "confidence-interval": confidence_interval_spec,
-        "irrigation-rate-l-m2-h": dict(irrigation_spec),
         "catalyst-addition-start-day": catalyst_start_day_spec,
+        shared_profile_break_component_ids[0]: {**dict(profile_break_spec), "default": float(profile_break_defaults[0])},
     }
+    for component_id, default_value in zip(catalyst_profile_component_ids, catalyst_profile_defaults):
+        control_specs_by_id[component_id] = {**dict(catalyst_profile_spec), "default": float(default_value)}
+    for component_id, default_value in zip(irrigation_profile_component_ids, irrigation_profile_defaults):
+        control_specs_by_id[component_id] = {**dict(irrigation_profile_spec), "default": float(default_value)}
     for column in EDITABLE_INPUT_COLUMNS:
         slider_spec = {**dict(input_specs[column]), "default": float(default_ui_values[column])}
         if column == ACID_SOLUBLE_COL:
@@ -3570,22 +4317,12 @@ def create_app(project_root: str) -> Dash:
             spec=dict(control_specs_by_id["max-day"]),
         ),
         slider_block(
-            label="Catalyst used (g/t/week)",
-            component_id="weekly-catalyst-gt-week",
-            spec=dict(control_specs_by_id["weekly-catalyst-gt-week"]),
-        ),
-        slider_block(
             label="Confidence interval (%)",
             component_id="confidence-interval",
             spec=dict(control_specs_by_id["confidence-interval"]),
         ),
         slider_block(
-            label="Irrigation rate (L/h/m2)",
-            component_id="irrigation-rate-l-m2-h",
-            spec=dict(control_specs_by_id["irrigation-rate-l-m2-h"]),
-        ),
-        slider_block(
-            label="Catalyst addition start day",
+            label="Catalyst schedule start day",
             component_id="catalyst-addition-start-day",
             spec=dict(control_specs_by_id["catalyst-addition-start-day"]),
         ),
@@ -3599,6 +4336,14 @@ def create_app(project_root: str) -> Dash:
             )
         )
 
+    profile_break_controls = [
+        slider_block(
+            label="Profile break (day)" if idx == 0 else f"Profile break {idx + 1} (day)",
+            component_id=component_id,
+            spec=dict(control_specs_by_id[component_id]),
+        )
+        for idx, component_id in enumerate(shared_profile_break_component_ids)
+    ]
     main_controls = [
     ]
     for column in MAIN_EDITABLE_COLUMNS:
@@ -3625,12 +4370,43 @@ def create_app(project_root: str) -> Dash:
         )
         for column in grouped_model_columns
     ]
+    catalyst_profile_controls = [
+        slider_block(
+            label=(
+                "Catalyst before break (mg/L)"
+                if idx == 0
+                else "Catalyst after break (mg/L)"
+            ),
+            component_id=component_id,
+            spec=dict(control_specs_by_id[component_id]),
+        )
+        for idx, component_id in enumerate(catalyst_profile_component_ids)
+    ]
+    irrigation_profile_controls = [
+        slider_block(
+            label=(
+                "Irrigation before break (L/h/m2)"
+                if idx == 0
+                else "Irrigation after break (L/h/m2)"
+            ),
+            component_id=component_id,
+            spec=dict(control_specs_by_id[component_id]),
+        )
+        for idx, component_id in enumerate(irrigation_profile_component_ids)
+    ]
     default_applied_controls = {
         "max_day": normalize_control_value(float(max_day_spec["default"]), max_day_spec),
-        "weekly_catalyst_gt_week": normalize_control_value(float(weekly_spec["default"]), weekly_spec),
         "confidence_interval": normalize_control_value(float(confidence_interval_spec["default"]), confidence_interval_spec),
-        "irrigation_rate_l_m2_h": normalize_control_value(float(irrigation_spec["default"]), irrigation_spec),
         "catalyst_addition_start_day": normalize_control_value(float(catalyst_start_day_spec["default"]), catalyst_start_day_spec),
+        "profile_break_days": [
+            normalize_control_value(value, profile_break_spec) for value in profile_break_defaults
+        ],
+        "catalyst_profile_bins_mg_l": [
+            normalize_control_value(value, catalyst_profile_spec) for value in catalyst_profile_defaults
+        ],
+        "irrigation_profile_bins_l_m2_h": [
+            normalize_control_value(value, irrigation_profile_spec) for value in irrigation_profile_defaults
+        ],
         "predictor_values": {column: float(default_ui_values[column]) for column in EDITABLE_INPUT_COLUMNS},
     }
     default_max_day = float(max_day_spec["default"])
@@ -3641,10 +4417,11 @@ def create_app(project_root: str) -> Dash:
     @lru_cache(maxsize=32)
     def get_cached_prediction_bundle(
         max_day_value: float,
-        weekly_catalyst_gt_week_value: float,
         confidence_interval_value: float,
-        irrigation_rate_l_m2_h_value: float,
         catalyst_addition_start_day_value: float,
+        profile_break_days_value: Tuple[float, ...],
+        catalyst_profile_bins_value: Tuple[float, ...],
+        irrigation_profile_bins_value: Tuple[float, ...],
         predictor_values_value: Tuple[float, ...],
     ) -> Dict[str, Any]:
         members, _model_dir, _skipped_paths = get_cached_saved_member_models(project_root)
@@ -3658,9 +4435,10 @@ def create_app(project_root: str) -> Dash:
         pred = predict_ensemble_curves(
             members=members,
             static_values=static_values,
-            weekly_catalyst_gt_week=float(weekly_catalyst_gt_week_value or 0.0),
-            irrigation_rate_l_m2_h=float(irrigation_rate_l_m2_h_value or 0.0),
             catalyst_addition_start_day=float(catalyst_addition_start_day_value or 0.0),
+            profile_break_days=np.asarray(profile_break_days_value, dtype=float),
+            catalyst_profile_bins=np.asarray(catalyst_profile_bins_value, dtype=float),
+            irrigation_profile_bins=np.asarray(irrigation_profile_bins_value, dtype=float),
             confidence_interval_high=float(confidence_interval_value or 90.0),
             max_day=resolved_max_day,
         )
@@ -4078,7 +4856,7 @@ def create_app(project_root: str) -> Dash:
             dcc.Store(
                 id="png-export-options",
                 data={
-                    "filename": "interactive_ensemble_prediction_v10_300dpi",
+                    "filename": "interactive_ensemble_prediction_v12_300dpi",
                     "width": PNG_EXPORT_WIDTH_PX,
                     "height": PNG_EXPORT_HEIGHT_PX,
                     "scale": PNG_EXPORT_SCALE,
@@ -4245,6 +5023,8 @@ def create_app(project_root: str) -> Dash:
                             html.Div(id="png-export-trigger", style={"display": "none"}),
                             html.Div(id="plot-resize-trigger", style={"display": "none"}),
                             control_grid(top_controls),
+                            section_title("Profile Breakpoints, irrigation and catalyst addition."),
+                            control_grid(profile_break_controls + catalyst_profile_controls + irrigation_profile_controls),
                             html.Div(
                                 id="geometry-guardrail-summary",
                                 children=build_geometry_guardrail_summary(
@@ -4489,7 +5269,7 @@ def create_app(project_root: str) -> Dash:
 
             const lightMeta = (lightFigure.layout && lightFigure.layout.meta) || {};
             const darkMeta = (darkFigure.layout && darkFigure.layout.meta) || {};
-            const baseFilename = (exportOptions && exportOptions.filename) || lightMeta.png_export_filename || darkMeta.png_export_filename || "interactive_ensemble_prediction_v10_300dpi";
+            const baseFilename = (exportOptions && exportOptions.filename) || lightMeta.png_export_filename || darkMeta.png_export_filename || "interactive_ensemble_prediction_v12_300dpi";
             const compactSuffix = (exportOptions && exportOptions.compact_suffix) || "confidence_band_only";
             const lightSuffix = (exportOptions && exportOptions.light_suffix) || "white_bg";
             const darkSuffix = (exportOptions && exportOptions.dark_suffix) || "dark_bg";
@@ -4573,10 +5353,11 @@ def create_app(project_root: str) -> Dash:
 
     control_component_ids = [
         "max-day",
-        "weekly-catalyst-gt-week",
         "confidence-interval",
-        "irrigation-rate-l-m2-h",
         "catalyst-addition-start-day",
+        *shared_profile_break_component_ids,
+        *catalyst_profile_component_ids,
+        *irrigation_profile_component_ids,
         *[predictor_component_id(column) for column in EDITABLE_INPUT_COLUMNS],
     ]
     control_input_ids = [slider_input_component_id(component_id) for component_id in control_component_ids]
@@ -4603,6 +5384,19 @@ def create_app(project_root: str) -> Dash:
                 raw_value,
                 control_specs_by_id[component_id],
             )
+        resolved_catalyst_start_day = normalize_control_value(
+            resolved_control_values.get("catalyst-addition-start-day"),
+            catalyst_start_day_spec,
+        )
+        resolved_control_values["catalyst-addition-start-day"] = float(resolved_catalyst_start_day)
+        normalized_break_days = resolve_catalyst_profile_break_days(
+            [resolved_control_values[component_id] for component_id in shared_profile_break_component_ids],
+            resolved_catalyst_start_day,
+            max_value=float(profile_break_spec["max"]),
+            min_gap=float(profile_break_spec["step"]),
+        )
+        for component_id, value in zip(shared_profile_break_component_ids, normalized_break_days):
+            resolved_control_values[component_id] = float(value)
 
         triggered_component_id = ""
         for triggered_prop_id in [item["prop_id"].split(".")[0] for item in callback_context.triggered]:
@@ -4635,13 +5429,20 @@ def create_app(project_root: str) -> Dash:
                 )
                 break
 
-        normalized_top_values = {
-            "max-day": resolved_control_values["max-day"],
-            "weekly-catalyst-gt-week": resolved_control_values["weekly-catalyst-gt-week"],
-            "confidence-interval": resolved_control_values["confidence-interval"],
-            "irrigation-rate-l-m2-h": resolved_control_values["irrigation-rate-l-m2-h"],
-            "catalyst-addition-start-day": resolved_control_values["catalyst-addition-start-day"],
-        }
+        resolved_catalyst_start_day = normalize_control_value(
+            resolved_control_values.get("catalyst-addition-start-day"),
+            catalyst_start_day_spec,
+        )
+        resolved_control_values["catalyst-addition-start-day"] = float(resolved_catalyst_start_day)
+        normalized_break_days = resolve_catalyst_profile_break_days(
+            [resolved_control_values[component_id] for component_id in shared_profile_break_component_ids],
+            resolved_catalyst_start_day,
+            max_value=float(profile_break_spec["max"]),
+            min_gap=float(profile_break_spec["step"]),
+        )
+        for component_id, value in zip(shared_profile_break_component_ids, normalized_break_days):
+            resolved_control_values[component_id] = float(value)
+
         predictor_values = tuple(float(resolved_control_values[predictor_component_id(column)]) for column in EDITABLE_INPUT_COLUMNS)
         ui_values = resolve_ui_state(predictor_values, input_specs)
         ui_values, geometry_guardrail_state = apply_geometry_input_limits(ui_values, input_specs)
@@ -4649,7 +5450,11 @@ def create_app(project_root: str) -> Dash:
         _static_values, _derived_values, _inactive_grouped_values, grouped_balance_state, resolved_chemistry = resolve_model_static_values(ui_values, input_specs)
         ui_values.update(_inactive_grouped_values)
 
-        final_component_values: Dict[str, float] = dict(normalized_top_values)
+        final_component_values: Dict[str, float] = {
+            component_id: float(resolved_control_values[component_id])
+            for component_id in control_component_ids
+            if not component_id.startswith("predictor-")
+        }
         for column in EDITABLE_INPUT_COLUMNS:
             final_component_values[predictor_component_id(column)] = float(ui_values[column])
 
@@ -4668,10 +5473,11 @@ def create_app(project_root: str) -> Dash:
 
     callback_states = [
         State(slider_input_component_id("max-day"), "value"),
-        State(slider_input_component_id("weekly-catalyst-gt-week"), "value"),
         State(slider_input_component_id("confidence-interval"), "value"),
-        State(slider_input_component_id("irrigation-rate-l-m2-h"), "value"),
         State(slider_input_component_id("catalyst-addition-start-day"), "value"),
+        *[State(slider_input_component_id(component_id), "value") for component_id in shared_profile_break_component_ids],
+        *[State(slider_input_component_id(component_id), "value") for component_id in catalyst_profile_component_ids],
+        *[State(slider_input_component_id(component_id), "value") for component_id in irrigation_profile_component_ids],
         *[State(slider_input_component_id(predictor_component_id(column)), "value") for column in EDITABLE_INPUT_COLUMNS],
     ]
 
@@ -4686,12 +5492,31 @@ def create_app(project_root: str) -> Dash:
     def apply_current_controls(
         _n_clicks: int,
         max_day: float,
-        weekly_catalyst_gt_week: float,
         confidence_interval: float,
-        irrigation_rate_l_m2_h: float,
         catalyst_addition_start_day: float,
-        *predictor_values: float,
+        *remaining_values: float,
     ) -> Tuple[Any, Any, Dict[str, Any]]:
+        profile_break_values = remaining_values[: len(shared_profile_break_component_ids)]
+        catalyst_profile_values = remaining_values[
+            len(shared_profile_break_component_ids) : len(shared_profile_break_component_ids) + len(catalyst_profile_component_ids)
+        ]
+        irrigation_profile_values = remaining_values[
+            len(shared_profile_break_component_ids) + len(catalyst_profile_component_ids) :
+            len(shared_profile_break_component_ids) + len(catalyst_profile_component_ids) + len(irrigation_profile_component_ids)
+        ]
+        predictor_values = remaining_values[
+            len(shared_profile_break_component_ids) + len(catalyst_profile_component_ids) + len(irrigation_profile_component_ids) :
+        ]
+        resolved_catalyst_start_day = normalize_control_value(
+            catalyst_addition_start_day,
+            catalyst_start_day_spec,
+        )
+        normalized_break_days = resolve_catalyst_profile_break_days(
+            profile_break_values,
+            resolved_catalyst_start_day,
+            max_value=float(profile_break_spec["max"]),
+            min_gap=float(profile_break_spec["step"]),
+        )
         ui_values = resolve_ui_state(tuple(predictor_values), input_specs)
         ui_values, geometry_guardrail_state = apply_geometry_input_limits(ui_values, input_specs)
         ui_values, _feed_mass_state = resolve_internal_feed_mass(ui_values, input_specs)
@@ -4718,10 +5543,17 @@ def create_app(project_root: str) -> Dash:
         return (
             {
                 "max_day": normalize_control_value(max_day, max_day_spec),
-                "weekly_catalyst_gt_week": normalize_control_value(weekly_catalyst_gt_week, weekly_spec),
                 "confidence_interval": normalize_control_value(confidence_interval, confidence_interval_spec),
-                "irrigation_rate_l_m2_h": normalize_control_value(irrigation_rate_l_m2_h, irrigation_spec),
-                "catalyst_addition_start_day": normalize_control_value(catalyst_addition_start_day, catalyst_start_day_spec),
+                "catalyst_addition_start_day": resolved_catalyst_start_day,
+                "profile_break_days": [
+                    normalize_control_value(value, profile_break_spec) for value in normalized_break_days
+                ],
+                "catalyst_profile_bins_mg_l": [
+                    normalize_control_value(value, catalyst_profile_spec) for value in catalyst_profile_values
+                ],
+                "irrigation_profile_bins_l_m2_h": [
+                    normalize_control_value(value, irrigation_profile_spec) for value in irrigation_profile_values
+                ],
                 "predictor_values": {column: float(ui_values[column]) for column in EDITABLE_INPUT_COLUMNS},
             },
             "",
@@ -4785,10 +5617,20 @@ def create_app(project_root: str) -> Dash:
         )
         bundle = get_cached_prediction_bundle(
             normalize_cache_float(applied_controls.get("max_day", max_day_spec["default"])),
-            normalize_cache_float(applied_controls.get("weekly_catalyst_gt_week", weekly_spec["default"])),
             normalize_cache_float(applied_controls.get("confidence_interval", confidence_interval_spec["default"])),
-            normalize_cache_float(applied_controls.get("irrigation_rate_l_m2_h", irrigation_spec["default"])),
             normalize_cache_float(applied_controls.get("catalyst_addition_start_day", catalyst_start_day_spec["default"])),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("profile_break_days", profile_break_defaults)
+            ),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("catalyst_profile_bins_mg_l", catalyst_profile_defaults)
+            ),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("irrigation_profile_bins_l_m2_h", irrigation_profile_defaults)
+            ),
             predictor_values,
         )
         return (
@@ -4815,10 +5657,20 @@ def create_app(project_root: str) -> Dash:
         )
         bundle = get_cached_prediction_bundle(
             normalize_cache_float(applied_controls.get("max_day", max_day_spec["default"])),
-            normalize_cache_float(applied_controls.get("weekly_catalyst_gt_week", weekly_spec["default"])),
             normalize_cache_float(applied_controls.get("confidence_interval", confidence_interval_spec["default"])),
-            normalize_cache_float(applied_controls.get("irrigation_rate_l_m2_h", irrigation_spec["default"])),
             normalize_cache_float(applied_controls.get("catalyst_addition_start_day", catalyst_start_day_spec["default"])),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("profile_break_days", profile_break_defaults)
+            ),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("catalyst_profile_bins_mg_l", catalyst_profile_defaults)
+            ),
+            tuple(
+                normalize_cache_float(value)
+                for value in applied_controls.get("irrigation_profile_bins_l_m2_h", irrigation_profile_defaults)
+            ),
             predictor_values,
         )
         excel_bytes = build_prediction_export_bytes(
@@ -4832,7 +5684,7 @@ def create_app(project_root: str) -> Dash:
             resolved_chemistry=bundle["resolved_chemistry"],
             max_day=float(bundle["resolved_max_day"]),
         )
-        return dcc.send_bytes(excel_bytes, "interactive_ensemble_prediction_v10_7day.xlsx")
+        return dcc.send_bytes(excel_bytes, "interactive_ensemble_prediction_v12_7day.xlsx")
 
     return app
 
@@ -4840,8 +5692,8 @@ def create_app(project_root: str) -> Dash:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Interactive Plotly/Dash app for NN_ExpEq_columns_only_v10 using the saved "
-            "member checkpoints created after running NN_ExpEq_columns_only_v10.py."
+            "Interactive Plotly/Dash app for NN_ExpEq_columns_only_v12 using the saved "
+            "member checkpoints created after running NN_ExpEq_columns_only_v12.py."
         )
     )
     parser.add_argument("--host", default="127.0.0.1")
@@ -4850,7 +5702,7 @@ def main() -> None:
     parser.add_argument(
         "--project-root",
         default=None,
-        help="Optional override for the NN_Pytorch_ExpEq_columns_only_v10 root.",
+        help="Optional override for the NN_Pytorch_ExpEq_columns_only_v12 root.",
     )
     args = parser.parse_args()
 
