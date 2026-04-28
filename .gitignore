@@ -10,6 +10,26 @@ __pycache__/
 *.zip
 NN_Pytorch_ExpEq_columns_only_v*/
 
+# Images and Office/PDF documents are local artifacts, not source
+*.bmp
+*.gif
+*.ico
+*.jpeg
+*.jpg
+*.png
+*.svg
+*.tif
+*.tiff
+*.webp
+*.doc
+*.docx
+*.pdf
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.xlsm
+
 # Generated weekly pipeline exports
 pipeline/intermediate/step_06_leaching_performance_weekly.csv
 pipeline/intermediate/step_06_leaching_performance_weekly_averaged.csv
