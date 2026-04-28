@@ -151,17 +151,15 @@ STATUS_COL_FALLBACK = "project_col_id"   # legacy fallback only
 COL_ID_COL = "project_col_id"            # individual column identifier (1 row per col)
 PAIR_ID_COL = "project_sample_id"        # ore-sample identifier (many cols per sample)
 PROJECT_NAME_COL = "project_name"
-# v11: the only authoritative source columns for catalyst/lixiviant dosing are:
-#   1. cumulative_catalyst_addition_kg_t  — authoritative cumulative catalyst load (kg/t)
-#   2. cumulative_lixiviant_m3_t          — authoritative cumulative lixiviant volume (m³/t)
-#   3. feed_mass_kg                       — ore mass in column (kg)
-#   4. column_inner_diameter_m            — column cross-section for irrigation conversion
-# Raw catalyst dosage and irrigation-rate headers are intentionally ignored at load time.
+# v12: catalyst_addition_mg_l is the preferred feed-dosage source when present.
+# Cumulative catalyst/lixiviant profiles remain the fallback for catalyzed rows
+# whose explicit dosage vector is unavailable.
 CATALYST_START_DAY_COL = "catalyst_start_days_of_leaching"
 TRANSITION_TIME_COL = "transition_time"
 CATALYST_CUM_COL      = "cumulative_catalyst_addition_kg_t"  # PRIMARY trusted source
 LIXIVIANT_CUM_COL     = "cumulative_lixiviant_m3_t"
 ALIGNED_TIME_COL = "leach_duration_days_aligned"
+CATALYST_ADDITION_COL = "catalyst_addition_mg_l"
 CATALYST_ADDITION_RECON_COL = "catalyst_addition_mg_l_reconstructed"
 IRRIGATION_RATE_RECON_COL = "irrigation_rate_l_m2_h_reconstructed"
 ORP_PROFILE_COL       = "feed_orp_mv_ag_agcl"     # feed (input) ORP
@@ -360,7 +358,6 @@ CURVE_SPECIFIC_STATIC_OVERRIDE_INDEX = {
 }
 
 RAW_DATASET_COLUMNS_EXCLUDED = {
-    "catalyst_addition_mg_l",
     "catalyst_dosage_mg_l",
     "irrigation_rate_l_m2_h",
     "irrigation_rate_l_h_m2",
@@ -387,6 +384,7 @@ OPTIONAL_DATASET_COLUMNS = {
     STATUS_COL_FALLBACK,
     CATALYST_START_DAY_COL,
     TRANSITION_TIME_COL,
+    CATALYST_ADDITION_COL,
     ORP_PROFILE_COL,
     PLS_ORP_PROFILE_COL,
     *OPTIONAL_STATIC_PREDICTOR_COLUMNS,
@@ -743,7 +741,7 @@ CONFIG = {
     "catalyst_use_prior_max": 0.12,
 }
 
-MODEL_LOGIC_VERSION = "v12_auto_sigmoid_gate_model_initial_stage_20260427"
+MODEL_LOGIC_VERSION = "v12_explicit_catalyst_dose_priority_20260428"
 
 PREFIT_OUTPUT_COLUMNS = [
     "row_index",
@@ -855,6 +853,7 @@ PREFIT_CACHE_COMPARE_COLUMNS = [
     "copper_oxides_equivalent",
     "copper_secondary_sulfides_equivalent",
     "copper_primary_sulfides_equivalent",
+    CATALYST_ADDITION_COL,
     CATALYST_CUM_COL,
     LIXIVIANT_CUM_COL,
     FEED_MASS_COL,
@@ -1777,6 +1776,7 @@ def resolve_curve_internal_catalyst_effect_start_day(
     recovery: np.ndarray,
     catalyst_cum_kg_t: np.ndarray,
     dosage_mg_l: np.ndarray,
+    dosage_source: str = CATALYST_ADDITION_RECON_COL,
 ) -> Tuple[float, str]:
     """Resolve the INTERNAL start day for catalyst physics.
 
@@ -1785,11 +1785,12 @@ def resolve_curve_internal_catalyst_effect_start_day(
     catalyzed column as truly catalyzed.
 
     Priority order:
-      1. first real rise in cumulative catalyst addition
-      2. first positive reconstructed dosage
-      3. explicit catalyst_start_days_of_leaching
-      4. transition_time
-      5. missing
+      1. first positive catalyst_addition_mg_l dosage, when that explicit vector exists
+      2. first real rise in cumulative catalyst addition when explicit dosage is unavailable
+      3. first positive reconstructed dosage when explicit dosage is unavailable
+      4. explicit catalyst_start_days_of_leaching
+      5. transition_time
+      6. missing
     """
     if str(status) == "Control":
         return resolve_curve_catalyst_start_day(
@@ -1799,13 +1800,17 @@ def resolve_curve_internal_catalyst_effect_start_day(
             recovery=recovery,
         )
 
-    cumulative_start = infer_catalyst_addition_start_day(time_days, catalyst_cum_kg_t)
-    if np.isfinite(cumulative_start):
-        return float(cumulative_start), f"{CATALYST_CUM_COL}_rise"
-
     dosage_start = infer_catalyst_start_day_from_dosage_array(time_days, dosage_mg_l)
-    if np.isfinite(dosage_start):
-        return float(dosage_start), CATALYST_ADDITION_RECON_COL
+    if str(dosage_source) == CATALYST_ADDITION_COL:
+        if np.isfinite(dosage_start):
+            return float(dosage_start), str(dosage_source)
+    else:
+        cumulative_start = infer_catalyst_addition_start_day(time_days, catalyst_cum_kg_t)
+        if np.isfinite(cumulative_start):
+            return float(cumulative_start), f"{CATALYST_CUM_COL}_rise"
+
+    if str(dosage_source) != CATALYST_ADDITION_COL and np.isfinite(dosage_start):
+        return float(dosage_start), str(dosage_source)
 
     explicit_start = scalar_from_maybe_array(row.get(CATALYST_START_DAY_COL, np.nan))
     if np.isfinite(explicit_start):
@@ -1824,11 +1829,13 @@ def compute_average_catalyst_dose_mg_l(
     catalyst_start_day: float = float("nan"),
     catalyst_cum_kg_t: Optional[np.ndarray] = None,
     lixiviant_cum_m3_t: Optional[np.ndarray] = None,
+    catalyst_feed_conc_mg_l: Optional[np.ndarray] = None,
 ) -> float:
     """Return the average catalyst feed concentration (mg/L) during active dosing intervals.
 
-    The average is always back-calculated from the authoritative per-tonne
-    cumulative profiles:
+    The explicit ``catalyst_addition_mg_l`` vector is used when available.
+    If it is unavailable for a catalyzed row, the average is back-calculated
+    from the per-tonne cumulative profiles:
 
         C_feed[i] = Δ(cum_catalyst_kg_t) × 1000 / Δ(cum_lixiviant_m3_t)
 
@@ -1843,7 +1850,20 @@ def compute_average_catalyst_dose_mg_l(
         catalyst_start_day,
     )
 
-    # PRIMARY: derive from authoritative cumulative profiles.
+    # PRIMARY: explicit feed concentration profile from catalyst_addition_mg_l.
+    if catalyst_feed_conc_mg_l is not None:
+        d = np.asarray(catalyst_feed_conc_mg_l, dtype=float)
+        n = d.size
+        if time_days is not None:
+            n = min(n, np.asarray(time_days, dtype=float).size)
+        if n > 0 and np.any(np.isfinite(d[:n])):
+            d = np.clip(np.where(np.isfinite(d[:n]), d[:n], 0.0), 0.0, None)
+            mask = active_mask[:n] if active_mask.size >= n else np.ones(n, dtype=bool)
+            eps = 1e-9
+            active = d[(d > eps) & mask]
+            return float(np.mean(active)) if active.size > 0 else 0.0
+
+    # FALLBACK: derive from cumulative profiles.
     # Both arrays must be on the same aligned time grid (same length).
     if catalyst_cum_kg_t is not None and lixiviant_cum_m3_t is not None:
         cc = np.asarray(catalyst_cum_kg_t, dtype=float)
@@ -2247,6 +2267,45 @@ def prepare_observed_profile_with_time(
         y_count[j] += 1.0
     y_unique = np.divide(y_sum, np.maximum(y_count, 1.0), dtype=float)
     return t_unique.astype(float), y_unique.astype(float)
+
+
+def resolve_observed_profile_on_time_grid(
+    source_time_days: np.ndarray,
+    target_time_days: np.ndarray,
+    observed_profile: Any,
+    clip_min: Optional[float] = None,
+) -> Optional[np.ndarray]:
+    """Align a non-cumulative vector profile to a requested time grid."""
+    target_t = np.asarray(target_time_days, dtype=float)
+    if target_t.size == 0:
+        return np.asarray([], dtype=float)
+
+    raw = parse_listlike(observed_profile)
+    if raw.size == 0 or not np.any(np.isfinite(raw)):
+        return None
+
+    if raw.size == target_t.size and np.asarray(source_time_days, dtype=float).size != raw.size:
+        out = np.where(np.isfinite(raw), raw, 0.0).astype(float)
+    else:
+        source_t = np.asarray(source_time_days, dtype=float)
+        obs_t, obs_v = prepare_observed_profile_with_time(source_t, raw)
+        if obs_t.size == 0 or obs_v.size == 0:
+            return None
+        if obs_t.size == 1:
+            out = np.full(target_t.shape, float(obs_v[0]), dtype=float)
+        else:
+            out = np.interp(
+                target_t,
+                obs_t,
+                obs_v,
+                left=float(obs_v[0]),
+                right=float(obs_v[-1]),
+            )
+
+    out = np.where(np.isfinite(out), out, 0.0)
+    if clip_min is not None and np.isfinite(float(clip_min)):
+        out = np.clip(out, float(clip_min), None)
+    return out.astype(float)
 
 
 def trimmed_mean(values: np.ndarray, trim_quantile: float = 0.10) -> float:
@@ -2736,9 +2795,10 @@ def _compute_cstr_column_concentration(
     a first-order lag determined by the hydraulic residence time τ.
 
     Feed concentration priority:
-      0. catalyst_feed_conc_mg_l pre-computed array (EXPLICIT PRIMARY — produced by
-         reconstruct_catalyst_feed_conc_mg_l from cumulative differentials, already
-         on the same time grid as time_days).  Bypasses all internal derivation.
+      0. catalyst_feed_conc_mg_l pre-computed array (EXPLICIT PRIMARY — normally
+         the catalyst_addition_mg_l vector aligned to time_days; for rows lacking
+         that vector, reconstructed from cumulative differentials). Bypasses all
+         internal derivation.
       1. Derived directly from cumulative_catalyst_kg_t_ref and
          cumulative_lixiviant_m3_t.
 
@@ -2751,9 +2811,8 @@ def _compute_cstr_column_concentration(
         from cumulative_lixiviant_m3_t via convert_lixiviant_cum_to_irrigation_rate_l_m2_h.
     cumulative_catalyst_kg_t_ref : cumulative catalyst profile (kg/t).
     cumulative_lixiviant_m3_t : cumulative lixiviant in m³/t.
-    catalyst_feed_conc_mg_l : pre-computed C_feed vector [mg/L] on the same time grid,
-        produced by reconstruct_catalyst_feed_conc_mg_l(c, lix_aligned).  When
-        provided this is used directly and the internal derivation is skipped.
+    catalyst_feed_conc_mg_l : pre-computed C_feed vector [mg/L] on the same time grid.
+        When provided this is used directly and internal derivation is skipped.
 
     Returns
     -------
@@ -2767,7 +2826,7 @@ def _compute_cstr_column_concentration(
         return np.zeros(0, dtype=float)
 
     # ---- Feed concentration profile C_feed[i] (mg/L) ----
-    # EXPLICIT PRIMARY: pre-computed from reconstruct_catalyst_feed_conc_mg_l.
+    # EXPLICIT PRIMARY: pre-computed/resolved feed concentration.
     # This vector is already on the same time grid (same length) so use directly.
     if catalyst_feed_conc_mg_l is not None and np.asarray(catalyst_feed_conc_mg_l).size == n:
         C_feed = np.where(
@@ -2837,6 +2896,7 @@ def compute_catalyst_column_signals(
     column_inner_diameter_m: float,
     column_height_m: float,
     irrigation_rate_l_m2_h: Optional[np.ndarray] = None,
+    catalyst_feed_conc_mg_l: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute both catalyst dynamic signals for the v11 model.
 
@@ -2849,7 +2909,7 @@ def compute_catalyst_column_signals(
 
     catalyst_conc_col_mg_l : np.ndarray
         Average catalyst concentration in the column pore solution (mg/L).
-        Computed via a CSTR residence-time model from the reconstructed feed
+        Computed via a CSTR residence-time model from the resolved feed
         concentration and column geometry.  This signal captures the
         *instantaneous probability* of catalyst-chalcopyrite contact.
     """
@@ -2857,11 +2917,12 @@ def compute_catalyst_column_signals(
         time_days=time_days,
         cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
     )
-    catalyst_feed_conc_mg_l = derive_catalyst_feed_conc_from_cumulative_profiles(
-        time_days=time_days,
-        cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
-        cumulative_lixiviant_m3_t=cumulative_lixiviant_m3_t,
-    )
+    if catalyst_feed_conc_mg_l is None or np.asarray(catalyst_feed_conc_mg_l).size != np.asarray(time_days).size:
+        catalyst_feed_conc_mg_l = derive_catalyst_feed_conc_from_cumulative_profiles(
+            time_days=time_days,
+            cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
+            cumulative_lixiviant_m3_t=cumulative_lixiviant_m3_t,
+        )
     catalyst_conc_col_mg_l = _compute_cstr_column_concentration(
         time_days=time_days,
         column_inner_diameter_m=column_inner_diameter_m,
@@ -2902,9 +2963,10 @@ def reconstruct_aligned_dynamic_sequences_for_row(
 ) -> Optional[Dict[str, np.ndarray]]:
     """Build all dynamic catalyst/lixiviant sequences on the filtered model time grid.
 
-    Returns ``None`` when the row lacks the cumulative source profiles needed
-    to derive catalyst feed concentration and irrigation rate from stepwise
-    cumulative differences.
+    Returns ``None`` when the row lacks the source profiles needed to build the
+    aligned dynamic inputs. The explicit catalyst_addition_mg_l vector is used
+    for feed concentration when available; cumulative-profile reconstruction is
+    the fallback for catalyzed rows without that vector.
     """
     status = normalize_status(
         row.get(STATUS_COL_PRIMARY, row.get(STATUS_COL_FALLBACK, ""))
@@ -2956,13 +3018,25 @@ def reconstruct_aligned_dynamic_sequences_for_row(
     if status == "Control":
         catalyst_addition_reconstructed = np.zeros_like(t_aligned, dtype=float)
         catalyst_conc_col_aligned = np.zeros_like(t_aligned, dtype=float)
+        catalyst_addition_source = "control_zero"
     else:
         if not np.any(np.isfinite(catalyst_cum_aligned) & (catalyst_cum_aligned > 1e-12)):
             return None
-        catalyst_addition_reconstructed = reconstruct_catalyst_feed_conc_mg_l(
-            catalyst_cum_kg_t=catalyst_cum_aligned,
-            lixiviant_cum_m3_t=lixiviant_cum_aligned,
+        explicit_catalyst_addition = resolve_observed_profile_on_time_grid(
+            source_time_days=t_raw,
+            target_time_days=t_aligned,
+            observed_profile=row.get(CATALYST_ADDITION_COL, np.nan),
+            clip_min=0.0,
         )
+        if explicit_catalyst_addition is not None:
+            catalyst_addition_reconstructed = np.asarray(explicit_catalyst_addition, dtype=float)
+            catalyst_addition_source = CATALYST_ADDITION_COL
+        else:
+            catalyst_addition_reconstructed = reconstruct_catalyst_feed_conc_mg_l(
+                catalyst_cum_kg_t=catalyst_cum_aligned,
+                lixiviant_cum_m3_t=lixiviant_cum_aligned,
+            )
+            catalyst_addition_source = CATALYST_ADDITION_RECON_COL
         catalyst_conc_col_aligned = _compute_cstr_column_concentration(
             time_days=t_aligned,
             column_inner_diameter_m=column_inner_diameter_m,
@@ -2988,6 +3062,7 @@ def reconstruct_aligned_dynamic_sequences_for_row(
         "catalyst_cum_aligned_kg_t": np.asarray(catalyst_cum_aligned, dtype=float),
         "lixiviant_cum_aligned_m3_t": np.asarray(lixiviant_cum_aligned, dtype=float),
         CATALYST_ADDITION_RECON_COL: np.asarray(catalyst_addition_reconstructed, dtype=float),
+        "catalyst_addition_mg_l_source": catalyst_addition_source,
         IRRIGATION_RATE_RECON_COL: np.asarray(irrigation_rate_aligned, dtype=float),
         "catalyst_conc_col_mg_l_reconstructed": np.asarray(catalyst_conc_col_aligned, dtype=float),
     }
@@ -3077,9 +3152,9 @@ def infer_catalyst_start_day_from_dosage_array(
     time_days: np.ndarray,
     dosage_mg_l: np.ndarray,
 ) -> float:
-    """Return the first day on which the reconstructed feed concentration is positive.
+    """Return the first day on which the resolved feed concentration is positive.
 
-    Uses the reconstructed feed-concentration array rather than the cumulative proxy so
+    Uses the feed-concentration array rather than the cumulative proxy so
     that the annotation is immune to cumulative reconstruction artefacts.
 
     Returns np.nan when no valid nonzero dosage entry is found.
@@ -3101,14 +3176,14 @@ def infer_catalyst_stop_day_from_dosage_array(
     time_days: np.ndarray,
     dosage_mg_l: np.ndarray,
 ) -> float:
-    """Return the last day on which the reconstructed feed concentration is positive.
+    """Return the last day on which the resolved feed concentration is positive.
 
     Returns np.nan if catalyst addition continues through the final observation
     (i.e. addition has not yet stopped within the observed window) — this
     matches the semantics of ``infer_catalyst_addition_stop_day`` which also
     returns nan for still-active columns.
 
-    Uses the reconstructed feed-concentration array rather than the cumulative proxy.
+    Uses the feed-concentration array rather than the cumulative proxy.
     """
     t = np.asarray(time_days, dtype=float)
     d = np.asarray(dosage_mg_l, dtype=float)
@@ -3764,6 +3839,7 @@ def build_shared_ensemble_plot_profile(
     time_days: np.ndarray,
     catalyst_cum: np.ndarray,
     lixiviant_cum: np.ndarray,
+    catalyst_feed_conc_mg_l: Optional[np.ndarray],
     feed_mass_kg: float,
     column_inner_diameter_m: float,
     target_day: float,
@@ -3815,10 +3891,19 @@ def build_shared_ensemble_plot_profile(
         feed_mass_kg=feed_mass_kg,
         column_inner_diameter_m=column_inner_diameter_m,
     )
-    profile_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
-        catalyst_cum_kg_t=profile_catalyst_cum,
-        lixiviant_cum_m3_t=profile_lixiviant_cum,
+    explicit_profile_catalyst_addition = resolve_observed_profile_on_time_grid(
+        source_time_days=time_days,
+        target_time_days=profile_time_days,
+        observed_profile=catalyst_feed_conc_mg_l,
+        clip_min=0.0,
     )
+    if explicit_profile_catalyst_addition is not None:
+        profile_catalyst_addition = explicit_profile_catalyst_addition
+    else:
+        profile_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
+            catalyst_cum_kg_t=profile_catalyst_cum,
+            lixiviant_cum_m3_t=profile_lixiviant_cum,
+        )
     plot_time_days = build_plot_time_grid(
         observed_time_days=np.asarray(profile_time_days, dtype=float),
         start_day=0.0,
@@ -3841,10 +3926,19 @@ def build_shared_ensemble_plot_profile(
         feed_mass_kg=feed_mass_kg,
         column_inner_diameter_m=column_inner_diameter_m,
     )
-    plot_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
-        catalyst_cum_kg_t=plot_catalyst_cum,
-        lixiviant_cum_m3_t=plot_lixiviant_cum,
+    explicit_plot_catalyst_addition = resolve_observed_profile_on_time_grid(
+        source_time_days=profile_time_days,
+        target_time_days=plot_time_days,
+        observed_profile=profile_catalyst_addition,
+        clip_min=0.0,
     )
+    if explicit_plot_catalyst_addition is not None:
+        plot_catalyst_addition = explicit_plot_catalyst_addition
+    else:
+        plot_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
+            catalyst_cum_kg_t=plot_catalyst_cum,
+            lixiviant_cum_m3_t=plot_lixiviant_cum,
+        )
     return {
         **catalyst_profile,
         "time_days": np.asarray(profile_time_days, dtype=float),
@@ -5750,6 +5844,11 @@ def augment_pair_with_virtual_data(
         if "column_inner_diameter_m" in input_only_idx
         else np.nan
     )
+    column_height_m = (
+        float(pair.input_only_raw[input_only_idx["column_height_m"]])
+        if "column_height_m" in input_only_idx
+        else np.nan
+    )
 
     # Check criteria for Control
     ctrl_time = pair.control.time
@@ -5887,6 +5986,24 @@ def augment_pair_with_virtual_data(
             lix_history_window_days=lix_history_window_days,
         )
         _cat_last_actual = float(np.nanmax(cat_time[np.isfinite(cat_time)])) if np.any(np.isfinite(cat_time)) else float("nan")
+        cat_catalyst_addition = resolve_observed_profile_on_time_grid(
+            source_time_days=pair.catalyzed.time,
+            target_time_days=ext_time,
+            observed_profile=pair.catalyzed.catalyst_addition_mg_l_reconstructed,
+            clip_min=0.0,
+        )
+        if cat_catalyst_addition is None:
+            cat_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
+                catalyst_cum_kg_t=np.asarray(cat_catalyst_cum, dtype=float),
+                lixiviant_cum_m3_t=np.asarray(cat_lixiviant_cum, dtype=float),
+            )
+        cat_catalyst_conc_col = _compute_cstr_column_concentration(
+            time_days=ext_time,
+            column_inner_diameter_m=column_inner_diameter_m,
+            column_height_m=column_height_m,
+            irrigation_rate_l_m2_h=np.asarray(cat_irrigation_rate, dtype=float),
+            catalyst_feed_conc_mg_l=np.asarray(cat_catalyst_addition, dtype=float),
+        )
         new_pair.catalyzed = CurveData(
             status=pair.catalyzed.status,
             time=ext_time,
@@ -5894,10 +6011,7 @@ def augment_pair_with_virtual_data(
             catalyst_cum=cat_catalyst_cum,
             lixiviant_cum=cat_lixiviant_cum,
             irrigation_rate_l_m2_h=cat_irrigation_rate,
-            catalyst_addition_mg_l_reconstructed=reconstruct_catalyst_feed_conc_mg_l(
-                catalyst_cum_kg_t=np.asarray(cat_catalyst_cum, dtype=float),
-                lixiviant_cum_m3_t=np.asarray(cat_lixiviant_cum, dtype=float),
-            ),
+            catalyst_addition_mg_l_reconstructed=np.asarray(cat_catalyst_addition, dtype=float),
             fit_params=pair.catalyzed.fit_params,
             row_index=pair.catalyzed.row_index,
             fit_curve_mode=pair.catalyzed.fit_curve_mode,
@@ -5907,7 +6021,7 @@ def augment_pair_with_virtual_data(
             prefit_fit_start_day_source=pair.catalyzed.prefit_fit_start_day_source,
             pls_orp_profile=pair.catalyzed.pls_orp_profile,
             col_id=pair.catalyzed.col_id,
-            catalyst_conc_col_mg_l=pair.catalyzed.catalyst_conc_col_mg_l,
+            catalyst_conc_col_mg_l=np.asarray(cat_catalyst_conc_col, dtype=float),
             catalyst_start_day=pair.catalyzed.catalyst_start_day,
             catalyst_start_day_source=pair.catalyzed.catalyst_start_day_source,
             catalyst_effective_start_day=pair.catalyzed.catalyst_effective_start_day,
@@ -5934,6 +6048,7 @@ def augment_curve_with_virtual_data(
     curve: "CurveData",
     feed_mass_kg: float,
     column_inner_diameter_m: float,
+    column_height_m: float = np.nan,
     target_day: float = 2500.0,
     interval_days: float = 7.0,
     catalyst_history_window_days: Optional[float] = None,
@@ -5998,14 +6113,31 @@ def augment_curve_with_virtual_data(
         catalyst_history_window_days=catalyst_history_window_days,
         lix_history_window_days=lix_history_window_days,
     )
-    ext_catalyst_addition = (
-        np.zeros_like(ext_time, dtype=float)
-        if str(curve.status) == "Control"
-        else reconstruct_catalyst_feed_conc_mg_l(
-            catalyst_cum_kg_t=np.asarray(ext_catalyst_cum, dtype=float),
-            lixiviant_cum_m3_t=np.asarray(ext_lixiviant_cum, dtype=float),
+    if str(curve.status) == "Control":
+        ext_catalyst_addition = np.zeros_like(ext_time, dtype=float)
+        ext_catalyst_conc_col = np.zeros_like(ext_time, dtype=float)
+    else:
+        resolved_ext_addition = resolve_observed_profile_on_time_grid(
+            source_time_days=curve.time,
+            target_time_days=ext_time,
+            observed_profile=curve.catalyst_addition_mg_l_reconstructed,
+            clip_min=0.0,
         )
-    )
+        ext_catalyst_addition = (
+            np.asarray(resolved_ext_addition, dtype=float)
+            if resolved_ext_addition is not None
+            else reconstruct_catalyst_feed_conc_mg_l(
+                catalyst_cum_kg_t=np.asarray(ext_catalyst_cum, dtype=float),
+                lixiviant_cum_m3_t=np.asarray(ext_lixiviant_cum, dtype=float),
+            )
+        )
+        ext_catalyst_conc_col = _compute_cstr_column_concentration(
+            time_days=ext_time,
+            column_inner_diameter_m=column_inner_diameter_m,
+            column_height_m=column_height_m,
+            irrigation_rate_l_m2_h=np.asarray(ext_irrigation_rate, dtype=float),
+            catalyst_feed_conc_mg_l=np.asarray(ext_catalyst_addition, dtype=float),
+        )
     return CurveData(
         status=curve.status,
         time=np.asarray(ext_time, dtype=float),
@@ -6023,13 +6155,7 @@ def augment_curve_with_virtual_data(
         prefit_fit_start_day_source=str(curve.prefit_fit_start_day_source),
         pls_orp_profile=np.asarray(curve.pls_orp_profile, dtype=float),
         col_id=str(curve.col_id),
-        # CSTR concentration: extend by repeating the last known value
-        # (constant-rate dosage assumption during the augmented tail).
-        catalyst_conc_col_mg_l=(
-            np.asarray(curve.catalyst_conc_col_mg_l, dtype=float)
-            if curve.catalyst_conc_col_mg_l.size > 0
-            else np.array([], dtype=float)
-        ),
+        catalyst_conc_col_mg_l=np.asarray(ext_catalyst_conc_col, dtype=float),
         catalyst_start_day=float(curve.catalyst_start_day),
         catalyst_start_day_source=str(curve.catalyst_start_day_source),
         catalyst_effective_start_day=float(curve.catalyst_effective_start_day),
@@ -6059,7 +6185,7 @@ def augment_pairs_with_virtual_data_by_col_id(
     """
     input_only_idx = {name: idx for idx, name in enumerate(INPUT_ONLY_COLUMNS)}
     curve_cache: Dict[Tuple[int, str, str], CurveData] = {}
-    curve_geometry: Dict[Tuple[int, str, str], Tuple[float, float]] = {}
+    curve_geometry: Dict[Tuple[int, str, str], Tuple[float, float, float]] = {}
 
     for pair in pairs:
         feed_mass_kg = (
@@ -6072,10 +6198,15 @@ def augment_pairs_with_virtual_data_by_col_id(
             if "column_inner_diameter_m" in input_only_idx
             else np.nan
         )
+        column_height_m = (
+            float(pair.input_only_raw[input_only_idx["column_height_m"]])
+            if "column_height_m" in input_only_idx
+            else np.nan
+        )
         for curve in [pair.control, pair.catalyzed]:
             key = curve_augmentation_cache_key(curve)
             if key not in curve_geometry:
-                curve_geometry[key] = (feed_mass_kg, column_inner_diameter_m)
+                curve_geometry[key] = (feed_mass_kg, column_inner_diameter_m, column_height_m)
 
     for pair in pairs:
         for curve, curve_cap in [
@@ -6085,11 +6216,12 @@ def augment_pairs_with_virtual_data_by_col_id(
             key = curve_augmentation_cache_key(curve)
             if key in curve_cache:
                 continue
-            feed_mass_kg, column_inner_diameter_m = curve_geometry[key]
+            feed_mass_kg, column_inner_diameter_m, column_height_m = curve_geometry[key]
             curve_cache[key] = augment_curve_with_virtual_data(
                 curve=curve,
                 feed_mass_kg=feed_mass_kg,
                 column_inner_diameter_m=column_inner_diameter_m,
+                column_height_m=column_height_m,
                 target_day=target_day,
                 interval_days=interval_days,
                 catalyst_history_window_days=catalyst_history_window_days,
@@ -6145,6 +6277,8 @@ class CurveData:
     catalyst_cum: np.ndarray
     lixiviant_cum: np.ndarray
     irrigation_rate_l_m2_h: np.ndarray
+    # Resolved feed dosage (mg/L): catalyst_addition_mg_l when present, otherwise
+    # the cumulative-difference reconstruction for catalyzed rows.
     catalyst_addition_mg_l_reconstructed: np.ndarray
     fit_params: np.ndarray
     row_index: int
@@ -6500,7 +6634,7 @@ def get_pair_training_tensors(
     ).astype(np.float32, copy=False)
     bundle["cat_post_start_mask"] = torch.as_tensor(cat_post_start_mask, dtype=dtype, device=device)
     bundle["cat_pre_start_mask"] = torch.as_tensor(1.0 - cat_post_start_mask, dtype=dtype, device=device)
-    # The reconstructed catalyst dosage vector is stored on CurveData and exported,
+    # The resolved catalyst dosage vector is stored on CurveData and exported,
     # but the deployed checkpoints consume the derived cumulative catalyst history
     # plus the CSTR pore-solution concentration signal. Adding direct dosage as a
     # third dynamic tensor would require retraining and checkpoint migration.
@@ -6540,6 +6674,7 @@ def get_pair_plot_profile(pair: PairSample) -> Dict[str, Any]:
         time_days=pair.catalyzed.time,
         catalyst_cum=pair.catalyzed.catalyst_cum,
         lixiviant_cum=pair.catalyzed.lixiviant_cum,
+        catalyst_feed_conc_mg_l=pair.catalyzed.catalyst_addition_mg_l_reconstructed,
         feed_mass_kg=feed_mass_kg,
         column_inner_diameter_m=column_inner_diameter_m,
         target_day=target_day,
@@ -7132,6 +7267,7 @@ def build_prefit_row_payloads(df: pd.DataFrame) -> List[Dict[str, Any]]:
         "copper_secondary_sulfides_equivalent",
         "copper_primary_sulfides_equivalent",
         "residual_cpy_%",
+        CATALYST_ADDITION_COL,
         CATALYST_CUM_COL,
         LIXIVIANT_CUM_COL,
         CATALYST_START_DAY_COL,
@@ -7160,6 +7296,12 @@ def prefit_biexponential_for_row_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     catalyst_cum_raw = parse_listlike(row.get(CATALYST_CUM_COL, np.nan))
     lixiviant_cum_raw = parse_listlike(row.get(LIXIVIANT_CUM_COL, np.nan))
     t, y, catalyst_cum = prepare_curve_arrays(t_raw, y_raw, catalyst_cum_raw, status=status, min_points=6)
+    catalyst_feed_conc_for_prefit = resolve_observed_profile_on_time_grid(
+        source_time_days=t_raw,
+        target_time_days=t,
+        observed_profile=row.get(CATALYST_ADDITION_COL, np.nan),
+        clip_min=0.0,
+    )
     fit_start_day = 0.0
     fit_start_day_source = "test_start"
     fit_ignored_initial_point_count = 0
@@ -7170,7 +7312,16 @@ def prefit_biexponential_for_row_payload(row: Dict[str, Any]) -> Dict[str, Any]:
             time_days=t,
             recovery=y,
             catalyst_cum_kg_t=catalyst_cum,
-            dosage_mg_l=np.asarray([], dtype=float),
+            dosage_mg_l=(
+                np.asarray(catalyst_feed_conc_for_prefit, dtype=float)
+                if catalyst_feed_conc_for_prefit is not None
+                else np.asarray([], dtype=float)
+            ),
+            dosage_source=(
+                CATALYST_ADDITION_COL
+                if catalyst_feed_conc_for_prefit is not None
+                else CATALYST_ADDITION_RECON_COL
+            ),
         )
         if np.isfinite(resolved_start):
             fit_start_day = float(resolved_start)
@@ -7281,6 +7432,12 @@ def prefit_biexponential_for_row_payload(row: Dict[str, Any]) -> Dict[str, Any]:
             ),
             catalyst_cum_kg_t=catalyst_cum_raw,
             lixiviant_cum_m3_t=lixiviant_cum_raw,
+            catalyst_feed_conc_mg_l=resolve_observed_profile_on_time_grid(
+                source_time_days=t_raw,
+                target_time_days=t_raw,
+                observed_profile=row.get(CATALYST_ADDITION_COL, np.nan),
+                clip_min=0.0,
+            ),
         )
         _half_sat = float(CONFIG.get("prefit_cat_cap_dose_half_sat_mg_l", 80.0))
         if (
@@ -8002,7 +8159,8 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
             t_raw = parse_listlike(row.get(TIME_COL_COLUMNS, np.nan))
             y_raw = parse_listlike(row.get(TARGET_COLUMNS, np.nan))
 
-            # v11: build both catalyst signals from cumulative source columns.
+            # v12: build catalyst signals from cumulative source columns plus
+            # the explicit catalyst_addition_mg_l feed vector when available.
             # Signal 1 (catalyst_cum): authoritative cumulative catalyst load in kg/t.
             # Signal 2 (catalyst_conc_col_mg_l): CSTR column concentration in mg/L.
             dynamic_sequences = reconstruct_aligned_dynamic_sequences_for_row(row, min_points=6)
@@ -8017,6 +8175,9 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
             catalyst_feed_conc_reconstructed = np.asarray(
                 dynamic_sequences[CATALYST_ADDITION_RECON_COL],
                 dtype=float,
+            )
+            catalyst_feed_conc_source = str(
+                dynamic_sequences.get("catalyst_addition_mg_l_source", CATALYST_ADDITION_RECON_COL)
             )
             conc_aligned = np.asarray(
                 dynamic_sequences["catalyst_conc_col_mg_l_reconstructed"],
@@ -8165,8 +8326,8 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
                 min_target_points=orp_min_target_points,
             )
 
-            # Dosage start/stop annotations follow the reconstructed feed
-            # concentration vector on the aligned model grid.
+            # Dosage start/stop annotations follow the resolved feed concentration
+            # vector on the aligned model grid.
             if status == "Control":
                 _dosage_start_day = float("nan")
                 _dosage_stop_day = float("nan")
@@ -8193,15 +8354,18 @@ def build_pair_samples(df: pd.DataFrame) -> List[PairSample]:
                 recovery=y,
                 catalyst_cum_kg_t=c,
                 dosage_mg_l=catalyst_feed_conc_reconstructed,
+                dosage_source=catalyst_feed_conc_source,
             )
-            # Average dose: back-calculated from the authoritative cumulative profiles
-            # (both c and lix_aligned are on the same filtered time grid t).
+            # Average dose follows the same resolved feed-concentration vector
+            # used for model inputs, falling back to cumulative profiles only
+            # when catalyst_addition_mg_l was unavailable.
             _avg_catalyst_dose_mg_l = compute_average_catalyst_dose_mg_l(
                 status=status,
                 time_days=t,
                 catalyst_start_day=_resolved_start_day,
                 catalyst_cum_kg_t=c,
                 lixiviant_cum_m3_t=lix_aligned,
+                catalyst_feed_conc_mg_l=catalyst_feed_conc_reconstructed,
             )
 
             curve_data = CurveData(
@@ -15058,7 +15222,7 @@ def main() -> None:
     analysis_summary["training_exclusions"] = training_exclusion_summary
     analysis_summary["missing_model_inputs"] = missing_input_summary
     analysis_summary["model_logic_version"] = MODEL_LOGIC_VERSION
-    analysis_summary["catalyst_model"] = "cumulative_diff_derived_v11"
+    analysis_summary["catalyst_model"] = "explicit_catalyst_addition_with_cumulative_fallback_v12"
     analysis_summary["pls_orp_enabled"] = PLS_ORP_PROFILE_COL in df.columns
     save_json(os.path.join(OUTPUTS_ROOT, "data_analysis_summary.json"), analysis_summary)
 
