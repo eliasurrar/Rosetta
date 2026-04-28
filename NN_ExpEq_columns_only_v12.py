@@ -208,10 +208,10 @@ KFOLD_GROUP_ALIAS: Dict[str, str] = {
     "015_jetti_project_file_amcf_6in": "amcf_head",
     "015_jetti_project_file_amcf_8in": "amcf_head",
     "003_jetti_project_file_amcf_head": "amcf_head",
-    "006_jetti_project_file_pvo": "amcf_head",
     "jetti_file_elephant_ii_ugm2": "elephant_ugm2",
     "jetti_file_elephant_ii_ugm2_coarse": "elephant_ugm2",
-
+    "011_jetti_project_file_rm": "rm_ore",
+    "011_jetti_project_file_rm_crushed": "rm_ore",
 }
 # Excluded individual column ids (project_col_id level):
 EXCLUDED_TRAIN_COL_IDS: set = {

@@ -4008,20 +4008,15 @@ def build_prediction_summary(
         html.Div(str(feed_mass_state.get("note", ""))),
         html.Div(f"Displayed ensemble band: {pred['band_label']}"),
         html.Div(
-            f"Resolved chemistry: Acid {resolved_chemistry['acid']:.1f}% | "
-            f"Cyanide {resolved_chemistry['cyanide']:.1f}% | "
-            f"Residual {resolved_chemistry['residual']:.1f}%"
+            f"Resolved chemistry: Acid Soluble {resolved_chemistry['acid']:.1f}% | "
+            f"Cyanide Soluble {resolved_chemistry['cyanide']:.1f}% | "
+            f"Residual Chalcopyrite {resolved_chemistry['residual']:.1f}%"
         ),
         html.Div(
             f"Internal copper equivalents: "
             f"Primary {derived_values[PRIMARY_SULFIDES_EQUIV_COL]:.3f} | "
             f"Secondary {derived_values[SECONDARY_SULFIDES_EQUIV_COL]:.3f} | "
             f"Oxides {derived_values[OXIDES_EQUIV_COL]:.3f}"
-        ),
-        html.Div(
-            f"Derived leach caps used at inference: "
-            f"Control {pred['control_cap']:.1f}% | "
-            f"Catalyzed {pred['catalyzed_cap']:.1f}%"
         ),
     ]
     if SULFIDES_EQUIV_COL in BASE.STATIC_PREDICTOR_COLUMNS:
