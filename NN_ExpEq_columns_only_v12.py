@@ -195,9 +195,9 @@ EXCLUDED_TRAIN_PAIR_IDS = {
     "jetti_project_file_tiger_rom_m1",
     "jetti_project_file_tiger_rom_m2",
     "jetti_project_file_tiger_rom_m3",
-    "jetti_project_file_toquepala_scl_sample_antigua"
-
+    "jetti_project_file_toquepala_scl_sample_antigua",
 }
+
 # K-fold grouping aliases: samples whose group label should be treated as the
 # same group during RepeatedGroupKFold. Use this to tie together related pairs
 # (e.g., the same ore at different particle sizes) so they always land in the
@@ -297,7 +297,7 @@ HEADERS_DICT_COLUMNS = {
     # "grouped_copper_oxides": ["Copper Oxides (%)", "numerical", 1],
     # "grouped_mixed_copper_ores": ["Mixed Copper Ores (%)", "numerical", 0],
     "grouped_acid_generating_sulfides": ["Acid Generating Sulphides (%)", "numerical", 0],
-    "grouped_phosphate_minerals": ["Phosphate Minerals (%)", "numerical", 0],
+    # "grouped_phosphate_minerals": ["Phosphate Minerals (%)", "numerical", 0],
     # "grouped_gangue_sulfides": ["Gangue Sulphides (%)", "numerical", 0], # excluded only because most of the values are zero.
     # "grouped_gangue_silicates": ["Gangue Silicates (%)", "numerical", 0], # try this, working perfectly without it
     "grouped_fe_oxides": ["Fe Oxides (%)", "numerical", 0], # try this, working perfectly without it
@@ -492,13 +492,16 @@ CONFIG = {
         "flat_input_accel":         0.06,
         "cap":                      1.50,    # was 3.0 — back to v1 original
         "uplift_fit":               1.20,   # was 1.40 (v3), 1.80 (v2) — back to v1
-        "uplift_tail":              1.50,   # was 1.70 (v3), 2.20 (v2) — back to v1
+        "uplift_tail":              2.20,   # was 1.70 (v3), 2.20 (v2) — back to v1
         "final_recovery":           0.55,
         "final_uplift":             0.85,
         "catalyst_use_prior":       0.05,
         "control_interp_fit":       0.90,
         "control_early_fit":        1.15,   # was 1.25 (v3), 1.50 (v2) — back to v1
         "control_tail_fit":         0.55,   # was 0.65 (v3), 0.90 (v2) — back to v1
+        "control_target_day_flatness": 0.10,
+        "catalyzed_target_day_flatness": 1.2,
+        "catalyzed_tail_window_slope": 50.0,
         "pre_catalyst_control_fit": 1.00,
         "control_early_process":    0.25,
         "tau_onset":                0.50,
@@ -528,7 +531,7 @@ CONFIG = {
     "final_day_secondary_leach_fraction_max": 0.70,
     "prefit_asymptote_target_day": 2500.0,
     "prefit_target_day_min_asymptote_frac": 0.95,
-    "prefit_target_day_max_slope_pct_per_day": 0.00002, # 0.002%/day max slope = 0.002*500=1.0% increase in 500 days
+    "prefit_target_day_max_slope_pct_per_day": 0.00002,  # used only in _target_day_flatness_penalty (training)
     "prefit_target_day_penalty_weight": 1.0,
     # Catalyzed-only slope enforcement at day 2500.
     # The catalyst accelerates chalcopyrite leaching, so by day 2500 most of the
@@ -583,6 +586,24 @@ CONFIG = {
     "prefit_tail_anchor_days": 50.0,
     # Multiplicative boost applied to tail-window point weights.  1.0 = no change.
     "prefit_tail_anchor_boost": 3.0,
+    # Training-time day-2500 flatness.  This mirrors the prefit asymptote logic
+    # in the NN loss, with a soft control weight and a harder catalyzed weight.
+    "training_target_day_flatness_day": 2500.0,
+    "training_target_day_min_asymptote_frac": 0.97,
+    "training_target_day_max_slope_pct_per_day": 0.00002,
+    "training_target_day_prefit_slope_margin_pct_per_day": 0.00002,
+    "training_tail_slope_window_days": 500.0,
+    # Hard inference-time tail dampening for catalyzed predictions.  Loss terms
+    # above are soft; this post-process guarantees the plotted/persisted
+    # catalyzed curve gains only this fraction of its original increment over
+    # the final window before ensemble_plot_target_day.
+    "catalyzed_tail_postprocess_enabled": False,   # hard postprocess removed; smooth penalty governs tail flatness
+    # Smooth tail-delta penalty (prefit + training).  Curves that gain more than
+    # tail_delta_threshold_pct recovery-percentage-points over the last 500 days
+    # are penalised via softplus — no sharp activation edge, no hard clipping.
+    # tail_softplus_sharpness controls the steepness of the transition: higher = sharper.
+    "tail_delta_threshold_pct": 2.0,
+    "tail_softplus_sharpness": 4.0,
     "prefit_virtual_rebase_enabled": False,
     "prefit_virtual_rebase_recovery_threshold_pct": 5.0,
     "prefit_virtual_rebase_min_points": 6,
@@ -2608,106 +2629,6 @@ def reconstruct_catalyst_feed_conc_mg_l(
     return np.where(np.isfinite(c_feed), c_feed, 0.0)
 
 
-def build_cumulative_lixiviant_from_irrigation_rate(
-    time_days: np.ndarray,
-    irrigation_rate_l_m2_h: Any,
-    feed_mass_kg: float,
-    column_inner_diameter_m: float,
-    start_day: float = 0.0,
-) -> np.ndarray:
-    t = np.asarray(time_days, dtype=float)
-    if t.size == 0:
-        return np.asarray([], dtype=float)
-
-    order = np.argsort(t)
-    t_sorted = t[order]
-    rate_raw = np.asarray(irrigation_rate_l_m2_h, dtype=float)
-    if rate_raw.ndim == 0:
-        rate = np.full(t_sorted.shape, float(rate_raw), dtype=float)
-    else:
-        rate = align_profile_to_time_length(rate_raw, len(t_sorted))
-    rate = np.clip(np.where(t_sorted >= float(start_day), rate, 0.0), 0.0, None)
-
-    area_m2 = column_cross_section_area_m2(column_inner_diameter_m)
-    feed_mass_t = float(feed_mass_kg) / 1000.0 if np.isfinite(feed_mass_kg) else np.nan
-    if not np.isfinite(area_m2) or area_m2 <= 1e-12 or not np.isfinite(feed_mass_t) or feed_mass_t <= 1e-12:
-        out = np.zeros_like(t_sorted, dtype=float)
-    else:
-        cum_actual_m3 = np.zeros_like(t_sorted, dtype=float)
-        for i in range(1, t_sorted.size):
-            dt_days = max(0.0, float(t_sorted[i] - t_sorted[i - 1]))
-            avg_rate_l_m2_h = 0.5 * (float(rate[i - 1]) + float(rate[i]))
-            delta_m3 = avg_rate_l_m2_h * area_m2 * 24.0 * dt_days / 1000.0
-            cum_actual_m3[i] = cum_actual_m3[i - 1] + max(0.0, delta_m3)
-        out = clean_cumulative_profile(cum_actual_m3 / feed_mass_t, force_zero=False)
-
-    unsorted_out = np.zeros_like(out)
-    unsorted_out[order] = out
-    return unsorted_out.astype(float)
-
-
-def derive_internal_geometry_predictors(
-    static_raw: np.ndarray,
-    input_only_raw: np.ndarray,
-) -> Dict[str, float]:
-    static_arr = np.asarray(static_raw, dtype=float)
-    input_only_arr = np.asarray(input_only_raw, dtype=float)
-    static_idx = {name: idx for idx, name in enumerate(STATIC_PREDICTOR_COLUMNS)}
-    input_only_idx = {name: idx for idx, name in enumerate(INPUT_ONLY_COLUMNS)}
-
-    feed_mass_kg = (
-        float(input_only_arr[input_only_idx[FEED_MASS_COL]])
-        if FEED_MASS_COL in input_only_idx
-        else np.nan
-    )
-    material_size_p80_in = (
-        float(static_arr[static_idx["material_size_p80_in"]]) if "material_size_p80_in" in static_idx else np.nan
-    )
-    column_height_m = (
-        float(input_only_arr[input_only_idx["column_height_m"]]) if "column_height_m" in input_only_idx else np.nan
-    )
-    column_inner_diameter_m = (
-        float(input_only_arr[input_only_idx["column_inner_diameter_m"]])
-        if "column_inner_diameter_m" in input_only_idx
-        else np.nan
-    )
-
-    area_m2 = column_cross_section_area_m2(column_inner_diameter_m)
-    column_volume_m3 = (
-        area_m2 * max(0.0, column_height_m)
-        if np.isfinite(area_m2) and area_m2 > 0.0 and np.isfinite(column_height_m) and column_height_m > 0.0
-        else np.nan
-    )
-    feed_mass_t = float(feed_mass_kg) / 1000.0 if np.isfinite(feed_mass_kg) and feed_mass_kg > 0.0 else np.nan
-    apparent_bulk_density_t_m3 = (
-        feed_mass_t / column_volume_m3
-        if np.isfinite(feed_mass_t) and np.isfinite(column_volume_m3) and column_volume_m3 > 0.0
-        else np.nan
-    )
-    material_size_to_column_diameter_ratio = (
-        float(material_size_p80_in) * 0.0254 / float(column_inner_diameter_m)
-        if np.isfinite(material_size_p80_in)
-        and material_size_p80_in > 0.0
-        and np.isfinite(column_inner_diameter_m)
-        and column_inner_diameter_m > 0.0
-        else np.nan
-    )
-    return {
-        "column_volume_m3": float(column_volume_m3) if np.isfinite(column_volume_m3) else np.nan,
-        "apparent_bulk_density_t_m3": (
-            float(apparent_bulk_density_t_m3) if np.isfinite(apparent_bulk_density_t_m3) else np.nan
-        ),
-        "material_size_to_column_diameter_ratio": (
-            float(material_size_to_column_diameter_ratio)
-            if np.isfinite(material_size_to_column_diameter_ratio)
-            else np.nan
-        ),
-    }
-
-
-# ---------------------------
-# v11 Catalyst / Lixiviant Reconstruction
-# ---------------------------
 def resolve_cumulative_profile_on_time_grid(
     time_days: np.ndarray,
     cumulative_profile: Any,
@@ -2887,53 +2808,6 @@ def _compute_cstr_column_concentration(
         C_col[i] = prev * alpha + float(C_feed[i]) * (1.0 - alpha)
 
     return C_col
-
-
-def compute_catalyst_column_signals(
-    time_days: np.ndarray,
-    cumulative_catalyst_kg_t_ref: Any,
-    cumulative_lixiviant_m3_t: Any,
-    column_inner_diameter_m: float,
-    column_height_m: float,
-    irrigation_rate_l_m2_h: Optional[np.ndarray] = None,
-    catalyst_feed_conc_mg_l: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute both catalyst dynamic signals for the v11 model.
-
-    Returns
-    -------
-    catalyst_cum_kg_t : np.ndarray
-        Cumulative catalyst added to the system (kg catalyst / t ore).
-        Serves as a proxy for "active catalyst mass" and is taken directly from
-        the authoritative `cumulative_catalyst_addition_kg_t` source column.
-
-    catalyst_conc_col_mg_l : np.ndarray
-        Average catalyst concentration in the column pore solution (mg/L).
-        Computed via a CSTR residence-time model from the resolved feed
-        concentration and column geometry.  This signal captures the
-        *instantaneous probability* of catalyst-chalcopyrite contact.
-    """
-    catalyst_cum_kg_t = resolve_cumulative_catalyst_profile_kg_t(
-        time_days=time_days,
-        cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
-    )
-    if catalyst_feed_conc_mg_l is None or np.asarray(catalyst_feed_conc_mg_l).size != np.asarray(time_days).size:
-        catalyst_feed_conc_mg_l = derive_catalyst_feed_conc_from_cumulative_profiles(
-            time_days=time_days,
-            cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
-            cumulative_lixiviant_m3_t=cumulative_lixiviant_m3_t,
-        )
-    catalyst_conc_col_mg_l = _compute_cstr_column_concentration(
-        time_days=time_days,
-        column_inner_diameter_m=column_inner_diameter_m,
-        column_height_m=column_height_m,
-        irrigation_rate_l_m2_h=irrigation_rate_l_m2_h,
-        cumulative_catalyst_kg_t_ref=cumulative_catalyst_kg_t_ref,
-        cumulative_lixiviant_m3_t=cumulative_lixiviant_m3_t,
-        catalyst_feed_conc_mg_l=catalyst_feed_conc_mg_l,
-    )
-
-    return catalyst_cum_kg_t, catalyst_conc_col_mg_l
 
 
 def resolve_aligned_lixiviant_cumulative_m3_t(
@@ -3388,64 +3262,6 @@ def interpolate_cumulative_profile(
     else:
         out = np.interp(qt[valid], at, ac)
     return clean_cumulative_profile(out, force_zero=False)
-
-
-def apply_practical_extension_stop(
-    weekly_value: float,
-    config_key: str,
-) -> float:
-    value = float(weekly_value) if np.isfinite(weekly_value) else 0.0
-    min_weekly_value = float(CONFIG.get(config_key, 0.0))
-    if min_weekly_value <= 0.0:
-        return value
-    if abs(value) < min_weekly_value:
-        return 0.0
-    return value
-
-
-def smooth_recovery_envelope(
-    time_days: np.ndarray,
-    values: np.ndarray,
-    smoothing_days: float,
-) -> np.ndarray:
-    t = np.asarray(time_days, dtype=float)
-    y = np.asarray(values, dtype=float)
-    if y.size <= 2 or not np.isfinite(smoothing_days) or smoothing_days <= 0.0:
-        return np.clip(y, 0.0, 100.0)
-
-    valid = np.isfinite(t) & np.isfinite(y)
-    if int(np.sum(valid)) <= 2:
-        return np.clip(y, 0.0, 100.0)
-
-    t_valid = t[valid]
-    y_valid = np.clip(y[valid], 0.0, 100.0)
-    dt = np.diff(t_valid)
-    dt = dt[np.isfinite(dt) & (dt > 1e-9)]
-    if dt.size == 0:
-        return np.clip(y, 0.0, 100.0)
-
-    window_points = int(np.ceil(float(smoothing_days) / float(np.nanmedian(dt))))
-    window_points = max(window_points, 3)
-    if window_points % 2 == 0:
-        window_points += 1
-    if window_points >= y_valid.size:
-        window_points = y_valid.size if y_valid.size % 2 == 1 else y_valid.size - 1
-    if window_points < 3:
-        return np.clip(y, 0.0, 100.0)
-
-    half = window_points // 2
-    ramp = np.arange(1, half + 2, dtype=float)
-    weights = np.concatenate([ramp, ramp[-2::-1]])
-    weights = weights / max(float(np.sum(weights)), 1e-9)
-    padded = np.pad(y_valid, (half, half), mode="edge")
-    smoothed = np.convolve(padded, weights, mode="valid")
-    smoothed = np.clip(smoothed, 0.0, 100.0)
-    smoothed = np.maximum.accumulate(smoothed)
-
-    out = np.asarray(y, dtype=float).copy()
-    out[valid] = smoothed
-    out[~valid] = np.nan
-    return out
 
 
 def smooth_predictive_interval_bounds(
@@ -4033,21 +3849,6 @@ def compute_material_size_p80_cap_penalty(material_size_p80_in: float) -> float:
     return float(p_inf + (1.0 - p_inf) / (1.0 + shifted_ratio ** n))
 
 
-def compute_residual_cpy_control_cap_factor(residual_cpy_pct: float) -> float:
-    """Return a mild multiplicative reduction for the control primary fraction."""
-    if not np.isfinite(residual_cpy_pct) or float(residual_cpy_pct) <= 0.0:
-        return 1.0
-
-    reduction_strength = float(CONFIG.get("control_cpy_cap_reduction_strength", 0.30))
-    reduction_center_pct = float(CONFIG.get("control_cpy_cap_reduction_center_pct", 4.0))
-    reduction_width_pct = float(CONFIG.get("control_cpy_cap_reduction_width_pct", 1.0))
-    scaled_residual = (
-        float(residual_cpy_pct) - reduction_center_pct
-    ) / max(reduction_width_pct, 1e-6)
-    reduction = reduction_strength / (1.0 + math.exp(-scaled_residual))
-    return float(np.clip(1.0 - reduction, 0.05, 1.0))
-
-
 def _sigmoid_scalar(value: float) -> float:
     if not np.isfinite(value):
         return 0.5
@@ -4525,107 +4326,23 @@ def sanitize_curve_params(
     return p
 
 
-def prepare_virtual_rebased_prefit_arrays(
-    time_days: np.ndarray,
-    recovery_pct: np.ndarray,
-    *,
-    cap: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Build a pre-fit-only view that ignores delayed sub-threshold recovery.
+def _prefit_point_weights(t: "np.ndarray") -> "Tuple[np.ndarray, np.ndarray]":
+    """Geomspace weight ramp 1→25 with optional tail-anchor boost; returns (weights, sigma)."""
+    n = len(t)
+    w = np.geomspace(1.0, 25.0, n)
+    tail_days = float(CONFIG.get("prefit_tail_anchor_days", 0.0))
+    tail_boost = float(np.clip(CONFIG.get("prefit_tail_anchor_boost", 1.0), 1.0, 20.0))
+    if tail_days > 0.0 and tail_boost > 1.0 and n > 1:
+        w = w.copy()
+        w[t >= (float(t[-1]) - tail_days)] *= tail_boost
+    return w, 1.0 / np.sqrt(w)
 
-    Some coarse/tall columns have a long near-zero start followed by a normal
-    leach rise. The biexponential form has no lag term, so fitting those early
-    points directly makes the curve compromise between "flat start" and
-    "post-breakthrough kinetics". For the pre-fit only, discard the prefix below
-    the configured recovery threshold, rebase the remaining segment to a
-    virtual origin, and fit that post-threshold shape.
-    """
-    t = np.asarray(time_days, dtype=float)
-    y = np.asarray(recovery_pct, dtype=float)
-    valid = np.isfinite(t) & np.isfinite(y)
-    t = t[valid]
-    y = y[valid]
-    if t.size > 0:
-        order = np.argsort(t)
-        t = t[order]
-        y = y[order]
 
-    out: Dict[str, Any] = {
-        "time": t,
-        "recovery": y,
-        "cap": cap,
-        "active": False,
-        "time_offset_day": 0.0,
-        "recovery_offset_pct": 0.0,
-        "ignored_initial_point_count": 0,
-        "fit_point_count": int(t.size),
-        "target_day_override": None,
-    }
-    if (
-        not bool(CONFIG.get("prefit_virtual_rebase_enabled", True))
-        or t.size == 0
-        or y.size == 0
-    ):
-        return out
-
-    threshold = float(CONFIG.get("prefit_virtual_rebase_recovery_threshold_pct", 5.0))
-    min_points = max(2, int(CONFIG.get("prefit_virtual_rebase_min_points", 6)))
-    if not np.isfinite(threshold) or threshold <= 0.0:
-        return out
-
-    crossing = np.flatnonzero(y >= threshold)
-    if crossing.size == 0:
-        return out
-    first_idx = int(crossing[0])
-    if first_idx <= 0 or (t.size - first_idx) < min_points:
-        return out
-
-    t0 = float(t[first_idx])
-    if first_idx > 0:
-        t_prev = float(t[first_idx - 1])
-        y_prev = float(y[first_idx - 1])
-        t_curr = float(t[first_idx])
-        y_curr = float(y[first_idx])
-        if y_curr > y_prev and y_prev < threshold <= y_curr:
-            frac = float(np.clip((threshold - y_prev) / max(y_curr - y_prev, 1e-12), 0.0, 1.0))
-            t0 = t_prev + frac * (t_curr - t_prev)
-
-    t_fit = np.clip(t[first_idx:] - t0, 0.0, None)
-    y_fit = np.clip(y[first_idx:] - threshold, 0.0, 100.0)
-    keep = np.isfinite(t_fit) & np.isfinite(y_fit)
-    t_fit = t_fit[keep]
-    y_fit = y_fit[keep]
-    if t_fit.size < min_points:
-        return out
-
-    if t_fit[0] > 1e-9 or y_fit[0] > 1e-9:
-        t_fit = np.concatenate([[0.0], t_fit])
-        y_fit = np.concatenate([[0.0], y_fit])
-
-    cap_fit = cap
-    cap_scalar = resolve_effective_asymptote_cap(cap)
-    if np.isfinite(cap_scalar):
-        cap_fit = max(2.0, cap_scalar - threshold)
-
-    target_day = float(CONFIG.get("prefit_asymptote_target_day", 2500.0))
-    target_day_override = None
-    if np.isfinite(target_day) and target_day > 0.0:
-        target_day_override = max(1.0, target_day - t0)
-
-    out.update(
-        {
-            "time": t_fit,
-            "recovery": y_fit,
-            "cap": cap_fit,
-            "active": True,
-            "time_offset_day": float(t0),
-            "recovery_offset_pct": float(threshold),
-            "ignored_initial_point_count": int(first_idx),
-            "fit_point_count": int(t_fit.size),
-            "target_day_override": target_day_override,
-        }
-    )
-    return out
+def _prefit_smooth_tail_penalty(delta_tail: float) -> float:
+    """Softplus penalty for > tail_delta_threshold_pct pp recovery gain over last 500 days."""
+    thr = max(1e-6, float(CONFIG.get("tail_delta_threshold_pct", 2.0)))
+    k = max(0.5, float(CONFIG.get("tail_softplus_sharpness", 4.0)))
+    return float(np.log1p(np.exp(min(k * (delta_tail / thr - 1.0), 50.0)))) / k * thr
 
 
 def fit_biexponential_params(
@@ -4679,22 +4396,8 @@ def fit_biexponential_params(
         amplitude_upper = max(5.0, 3.0 * observed_upper)
     amplitude_upper = max(amplitude_upper, min_amp + 1e-3)
 
-    # ---- point weights: exponential ramp 1 → 25 ----------------------------
+    weights, sigma = _prefit_point_weights(t)
     n_pts = len(t)
-    weights = np.geomspace(1.0, 25.0, n_pts)
-    # ---- tail-anchor: boost the final N days for all columns ----------------
-    # This anchors the extrapolation start to the observed late-test trend
-    # without changing the rest of the curve fit.
-    _tail_anchor_days = float(CONFIG.get("prefit_tail_anchor_days", 0.0))
-    _tail_anchor_boost = float(np.clip(CONFIG.get("prefit_tail_anchor_boost", 1.0), 1.0, 20.0))
-    if _tail_anchor_days > 0.0 and _tail_anchor_boost > 1.0 and n_pts > 1:
-        _t_max = float(t[-1])
-        _tail_mask = t >= (_t_max - _tail_anchor_days)
-        weights = weights.copy()
-        weights[_tail_mask] *= _tail_anchor_boost
-    # sigma for curve_fit is inversely proportional to weight:
-    #   cost ∝ Σ ((y - f) / sigma)²  →  sigma = 1/√w
-    sigma = 1.0 / np.sqrt(weights)
 
     # ---- curve-shape analysis ------------------------------------------------
     y_max = float(np.nanmax(y))
@@ -4769,7 +4472,6 @@ def fit_biexponential_params(
         else float(CONFIG.get("prefit_asymptote_target_day", 2500.0))
     )
     target_day_min_frac = float(np.clip(CONFIG.get("prefit_target_day_min_asymptote_frac", 0.95), 0.0, 1.0))
-    target_day_max_slope = max(0.0, float(CONFIG.get("prefit_target_day_max_slope_pct_per_day", 0.005)))
     target_day_penalty_weight = max(0.0, float(CONFIG.get("prefit_target_day_penalty_weight", 1.0)))
     if target_day_penalty_weight_override is not None and np.isfinite(float(target_day_penalty_weight_override)):
         target_day_penalty_weight = max(0.0, float(target_day_penalty_weight_override))
@@ -4817,12 +4519,12 @@ def fit_biexponential_params(
             and asymptote > 1e-9
         ):
             pred_target = float(double_exp_curve_np(np.asarray([target_day]), a1, b1, a2, b2)[0])
-            slope_target = float(double_exp_slope_np(np.asarray([target_day]), a1, b1, a2, b2)[0])
             # Shortfall: how far the curve is from 95% of its own asymptote at target_day.
-            # Disabled for catalyzed — slope constraint alone enforces near-flatness.
+            # Disabled for catalyzed — tail-delta penalty alone enforces near-flatness.
             target_shortfall = 0.0 if disable_shortfall_penalty else max(0.0, target_day_min_frac * asymptote - pred_target)
-            slope_excess = max(0.0, slope_target - target_day_max_slope)
-            target_day_penalty = target_shortfall ** 2 + (365.0 * slope_excess) ** 2
+            _tail_start = max(0.0, target_day - 500.0)
+            _delta_tail = max(0.0, pred_target - float(double_exp_curve_np(np.asarray([_tail_start]), a1, b1, a2, b2)[0]))
+            target_day_penalty = target_shortfall ** 2 + _prefit_smooth_tail_penalty(_delta_tail) ** 2
         else:
             pred_target = np.nan
             target_day_penalty = 0.0
@@ -5088,17 +4790,8 @@ def fit_sigmoid_gated_biexponential_params(
         amplitude_upper = max(5.0, 3.0 * observed_upper)
     amplitude_upper = max(amplitude_upper, min_amp + 1e-3)
 
+    weights, sigma = _prefit_point_weights(t)
     n_pts = len(t)
-    weights = np.geomspace(1.0, 25.0, n_pts)
-    # ---- tail-anchor: boost the final N days for all columns ----------------
-    _tail_anchor_days = float(CONFIG.get("prefit_tail_anchor_days", 0.0))
-    _tail_anchor_boost = float(np.clip(CONFIG.get("prefit_tail_anchor_boost", 1.0), 1.0, 20.0))
-    if _tail_anchor_days > 0.0 and _tail_anchor_boost > 1.0 and n_pts > 1:
-        _t_max = float(t[-1])
-        _tail_mask = t >= (_t_max - _tail_anchor_days)
-        weights = weights.copy()
-        weights[_tail_mask] *= _tail_anchor_boost
-    sigma = 1.0 / np.sqrt(weights)
 
     threshold = float(CONFIG.get("prefit_sigmoid_gate_trigger_recovery_pct", 5.0))
     crossing = np.flatnonzero(y >= threshold)
@@ -5193,7 +4886,6 @@ def fit_sigmoid_gated_biexponential_params(
         cap_target_soft_margin = 0.0
     target_day = float(CONFIG.get("prefit_asymptote_target_day", 2500.0))
     target_day_min_frac = float(np.clip(CONFIG.get("prefit_target_day_min_asymptote_frac", 0.95), 0.0, 1.0))
-    target_day_max_slope = max(0.0, float(CONFIG.get("prefit_target_day_max_slope_pct_per_day", 0.005)))
     target_day_penalty_weight = max(0.0, float(CONFIG.get("prefit_target_day_penalty_weight", 1.0)))
     if target_day_penalty_weight_override is not None and np.isfinite(float(target_day_penalty_weight_override)):
         target_day_penalty_weight = max(0.0, float(target_day_penalty_weight_override))
@@ -5241,10 +4933,10 @@ def fit_sigmoid_gated_biexponential_params(
             and asymptote > 1e-9
         ):
             pred_target = float(gated_double_exp_curve_np(np.asarray([target_day]), a1, b1, a2, b2, gate_mid, gate_width)[0])
-            slope_target = float(gated_double_exp_slope_np(np.asarray([target_day]), a1, b1, a2, b2, gate_mid, gate_width)[0])
             target_shortfall = 0.0 if disable_shortfall_penalty else max(0.0, target_day_min_frac * asymptote - pred_target)
-            slope_excess = max(0.0, slope_target - target_day_max_slope)
-            target_day_penalty = target_shortfall ** 2 + (365.0 * slope_excess) ** 2
+            _tail_start = max(0.0, target_day - 500.0)
+            _delta_tail = max(0.0, pred_target - float(gated_double_exp_curve_np(np.asarray([_tail_start]), a1, b1, a2, b2, gate_mid, gate_width)[0]))
+            target_day_penalty = target_shortfall ** 2 + _prefit_smooth_tail_penalty(_delta_tail) ** 2
         else:
             pred_target = np.nan
             target_day_penalty = 0.0
@@ -5406,80 +5098,6 @@ def resolve_model_param_bounds(
 
 # -----------------------------------
 # Ore calculation
-def compute_remaining_ore_factor_chemistry_based(
-    y_ctrl: torch.Tensor,
-    copper_primary_sulfides_equiv: torch.Tensor,
-    copper_oxides_equiv: torch.Tensor,
-    min_floor: float = 0.05,
-    copper_secondary_sulfides_equiv: Optional[torch.Tensor] = None,
-    is_catalyzed: bool = False,
-) -> torch.Tensor:
-    """
-    Compute remaining ore factor based on ore chemistry using leachable_real.
-
-    The maximum leachable is computed as:
-        leachable_real = oxides * pct_ox + secondary * pct_sec + primary * pct_pri
-    where the primary percentage differs between control and catalyzed curves
-    (CONFIG keys ``leach_pct_primary_sulfides_control`` vs
-    ``leach_pct_primary_sulfides_catalyzed``).
-
-    Args:
-        y_ctrl: Control recovery (0-100%)
-        copper_primary_sulfides_equiv: Primary sulfides (%)
-        copper_oxides_equiv: Oxides (%)
-        min_floor: Minimum factor to allow some residual uplift
-        copper_secondary_sulfides_equiv: Secondary sulfides (%), optional
-        is_catalyzed: If True, use catalyzed primary leach percentage
-
-    Returns:
-        remaining_ore_factor: Fraction of leachable copper still available (0-1)
-    """
-    pct_ox  = float(CONFIG.get("leach_pct_oxides", 1.00))
-    pct_sec = float(CONFIG.get("leach_pct_secondary_sulfides", 0.70))
-    if is_catalyzed:
-        pct_pri = float(CONFIG.get("leach_pct_primary_sulfides_catalyzed", 0.75))
-    else:
-        pct_pri = float(CONFIG.get("leach_pct_primary_sulfides_control", 0.33))
-
-    total_copper_equivalent = torch.clamp(
-        torch.nan_to_num(copper_oxides_equiv, nan=0.0, posinf=0.0, neginf=0.0),
-        min=0.0,
-    ) + torch.clamp(
-        torch.nan_to_num(copper_primary_sulfides_equiv, nan=0.0, posinf=0.0, neginf=0.0),
-        min=0.0,
-    )
-    if copper_secondary_sulfides_equiv is not None:
-        total_copper_equivalent = total_copper_equivalent + torch.clamp(
-            torch.nan_to_num(copper_secondary_sulfides_equiv, nan=0.0, posinf=0.0, neginf=0.0),
-            min=0.0,
-        )
-    cu_safe = torch.clamp(total_copper_equivalent, min=1e-6)
-
-    # leachable_real (in same units as the total copper equivalent)
-    leachable_real = copper_oxides_equiv * pct_ox + copper_primary_sulfides_equiv * pct_pri
-    if copper_secondary_sulfides_equiv is not None:
-        leachable_real = leachable_real + copper_secondary_sulfides_equiv * pct_sec
-
-    # Maximum leachable as fraction of total copper
-    max_leachable_frac = torch.clamp(leachable_real / cu_safe, min=1e-6, max=1.0)
-
-    # Extracted fraction of total copper
-    extracted_fraction = torch.clamp(y_ctrl / 100.0, min=0.0, max=1.0)
-
-    # Remaining fraction of leachable copper
-    remaining_fraction = torch.clamp(
-        1.0 - extracted_fraction / max_leachable_frac,
-        min=0.0,
-        max=1.0,
-    )
-
-    remaining_ore_factor = torch.clamp(remaining_fraction, min=min_floor, max=1.0)
-    return remaining_ore_factor
-
-
-# ---------------------------
-# Fitted curve plotting and virtual data augmentation
-# ---------------------------
 def calculate_fit_metrics(actual: np.ndarray, predicted: np.ndarray) -> Tuple[float, float, float]:
     """
     Calculate R², RMSE, and Bias for fitted curve evaluation.
@@ -5809,231 +5427,6 @@ def plot_fitted_curve_per_sample(
         plt.close()
 
         print(f"[Plot] Saved: {plot_filename}")
-
-
-def augment_pair_with_virtual_data(
-    pair: 'PairSample',
-    target_day: float = 2500.0,
-    interval_days: float = 7.0,
-    catalyst_history_window_days: Optional[float] = None,
-    lix_history_window_days: Optional[float] = None,
-) -> 'PairSample':
-    """
-    Augment a PairSample from the stored per-column pre-fit curves if criteria
-    are met. Each curve is extended only when its own fit meets R² > 0.5 and
-    RMSE < 5.0.
-    """
-    catalyst_history_window_days = float(
-        CONFIG.get("catalyst_extension_window_days", 21.0)
-        if catalyst_history_window_days is None
-        else catalyst_history_window_days
-    )
-    lix_history_window_days = float(
-        CONFIG.get("lixiviant_extension_window_days", catalyst_history_window_days)
-        if lix_history_window_days is None
-        else lix_history_window_days
-    )
-    input_only_idx = {name: idx for idx, name in enumerate(INPUT_ONLY_COLUMNS)}
-    feed_mass_kg = (
-        float(pair.input_only_raw[input_only_idx[FEED_MASS_COL]])
-        if FEED_MASS_COL in input_only_idx
-        else np.nan
-    )
-    column_inner_diameter_m = (
-        float(pair.input_only_raw[input_only_idx["column_inner_diameter_m"]])
-        if "column_inner_diameter_m" in input_only_idx
-        else np.nan
-    )
-    column_height_m = (
-        float(pair.input_only_raw[input_only_idx["column_height_m"]])
-        if "column_height_m" in input_only_idx
-        else np.nan
-    )
-
-    # Check criteria for Control
-    ctrl_time = pair.control.time
-    ctrl_recovery = pair.control.recovery
-    ctrl_params = pair.control.fit_params
-    
-    if len(ctrl_params) >= 4 and np.all(np.isfinite(ctrl_params[:4])):
-        ctrl_pred = prefit_curve_prediction_np(
-            ctrl_time,
-            ctrl_params,
-            pair.control.fit_curve_mode,
-            pair.control.fit_gate_mid_day,
-            pair.control.fit_gate_width_day,
-        )
-        ctrl_metric_mask = prefit_metric_mask(ctrl_time, pair.control.prefit_fit_start_day)
-        ctrl_r2, ctrl_rmse, _ = calculate_fit_metrics(ctrl_recovery[ctrl_metric_mask], ctrl_pred[ctrl_metric_mask])
-    else:
-        ctrl_r2, ctrl_rmse = np.nan, np.nan
-    
-    # Check criteria for Catalyzed
-    cat_time = pair.catalyzed.time
-    cat_recovery = pair.catalyzed.recovery
-    cat_params = pair.catalyzed.fit_params
-    
-    if len(cat_params) >= 4 and np.all(np.isfinite(cat_params[:4])):
-        cat_pred = prefit_curve_prediction_np(
-            cat_time,
-            cat_params,
-            pair.catalyzed.fit_curve_mode,
-            pair.catalyzed.fit_gate_mid_day,
-            pair.catalyzed.fit_gate_width_day,
-        )
-        cat_metric_mask = prefit_metric_mask(cat_time, pair.catalyzed.prefit_fit_start_day)
-        cat_r2, cat_rmse, _ = calculate_fit_metrics(cat_recovery[cat_metric_mask], cat_pred[cat_metric_mask])
-    else:
-        cat_r2, cat_rmse = np.nan, np.nan
-    
-    # Evaluate the extension criteria independently for each curve
-    ctrl_meets_criteria = np.isfinite(ctrl_r2) and ctrl_r2 > 0.5 and np.isfinite(ctrl_rmse) and ctrl_rmse < 5.0
-    cat_meets_criteria = np.isfinite(cat_r2) and cat_r2 > 0.5 and np.isfinite(cat_rmse) and cat_rmse < 5.0
-    
-    # Create new pair with augmented data
-    new_pair = PairSample(
-        pair_id=pair.pair_id,
-        sample_id=pair.sample_id,
-        project_name=pair.project_name,
-        static_raw=pair.static_raw,
-        input_only_raw=pair.input_only_raw,
-        control=pair.control,
-        catalyzed=pair.catalyzed,
-        control_static_raw=pair.control_static_raw,
-        catalyzed_static_raw=pair.catalyzed_static_raw,
-        static_scaled=pair.static_scaled,
-        static_imputed=pair.static_imputed,
-        ctrl_cap=pair.ctrl_cap,
-        cat_cap=pair.cat_cap,
-        control_cap_anchor_pct=pair.control_cap_anchor_pct,
-        catalyzed_cap_anchor_pct=pair.catalyzed_cap_anchor_pct,
-        control_cap_anchor_active=pair.control_cap_anchor_active,
-        catalyzed_cap_anchor_active=pair.catalyzed_cap_anchor_active,
-        orp_aux_target_raw=pair.orp_aux_target_raw,
-        orp_aux_target_norm=pair.orp_aux_target_norm,
-        orp_aux_mask=pair.orp_aux_mask,
-        pls_orp_aux_target_raw=pair.pls_orp_aux_target_raw,
-        pls_orp_aux_target_norm=pair.pls_orp_aux_target_norm,
-        pls_orp_aux_mask=pair.pls_orp_aux_mask,
-    )
-    
-    # Augment Control if criteria met
-    if ctrl_meets_criteria:
-        ext_time, ext_recovery = generate_virtual_points(
-            ctrl_time, ctrl_recovery, ctrl_params, target_day, interval_days,
-            cap=pair.ctrl_cap,
-            curve_mode=pair.control.fit_curve_mode,
-            gate_mid_day=pair.control.fit_gate_mid_day,
-            gate_width_day=pair.control.fit_gate_width_day,
-            fit_start_day=pair.control.prefit_fit_start_day,
-        )
-        ctrl_catalyst_cum, ctrl_lixiviant_cum, ctrl_irrigation_rate = extend_curve_dynamic_inputs_to_time_grid(
-            curve_data=pair.control,
-            target_time_days=ext_time,
-            feed_mass_kg=feed_mass_kg,
-            column_inner_diameter_m=column_inner_diameter_m,
-            step_days=interval_days,
-            catalyst_history_window_days=catalyst_history_window_days,
-            lix_history_window_days=lix_history_window_days,
-        )
-        _ctrl_last_actual = float(np.nanmax(ctrl_time[np.isfinite(ctrl_time)])) if np.any(np.isfinite(ctrl_time)) else float("nan")
-        new_pair.control = CurveData(
-            status=pair.control.status,
-            time=ext_time,
-            recovery=ext_recovery,
-            catalyst_cum=ctrl_catalyst_cum,
-            lixiviant_cum=ctrl_lixiviant_cum,
-            irrigation_rate_l_m2_h=ctrl_irrigation_rate,
-            catalyst_addition_mg_l_reconstructed=np.zeros_like(ctrl_catalyst_cum, dtype=float),
-            fit_params=pair.control.fit_params,
-            row_index=pair.control.row_index,
-            fit_curve_mode=pair.control.fit_curve_mode,
-            fit_gate_mid_day=pair.control.fit_gate_mid_day,
-            fit_gate_width_day=pair.control.fit_gate_width_day,
-            prefit_fit_start_day=pair.control.prefit_fit_start_day,
-            prefit_fit_start_day_source=pair.control.prefit_fit_start_day_source,
-            pls_orp_profile=pair.control.pls_orp_profile,
-            col_id=pair.control.col_id,
-            catalyst_conc_col_mg_l=pair.control.catalyst_conc_col_mg_l,
-            catalyst_start_day=pair.control.catalyst_start_day,
-            catalyst_start_day_source=pair.control.catalyst_start_day_source,
-            catalyst_effective_start_day=pair.control.catalyst_effective_start_day,
-            catalyst_effective_start_day_source=pair.control.catalyst_effective_start_day_source,
-            catalyst_stop_day=pair.control.catalyst_stop_day,
-            avg_catalyst_dose_mg_l=pair.control.avg_catalyst_dose_mg_l,
-            catalyst_dosage_start_day=pair.control.catalyst_dosage_start_day,
-            catalyst_dosage_stop_day=pair.control.catalyst_dosage_stop_day,
-            last_actual_day=_ctrl_last_actual,
-        )
-
-    # Augment Catalyzed if criteria met
-    if cat_meets_criteria:
-        ext_time, ext_recovery = generate_virtual_points(
-            cat_time, cat_recovery, cat_params, target_day, interval_days,
-            cap=pair.cat_cap,
-            curve_mode=pair.catalyzed.fit_curve_mode,
-            gate_mid_day=pair.catalyzed.fit_gate_mid_day,
-            gate_width_day=pair.catalyzed.fit_gate_width_day,
-            fit_start_day=pair.catalyzed.prefit_fit_start_day,
-        )
-        cat_catalyst_cum, cat_lixiviant_cum, cat_irrigation_rate = extend_curve_dynamic_inputs_to_time_grid(
-            curve_data=pair.catalyzed,
-            target_time_days=ext_time,
-            feed_mass_kg=feed_mass_kg,
-            column_inner_diameter_m=column_inner_diameter_m,
-            step_days=interval_days,
-            catalyst_history_window_days=catalyst_history_window_days,
-            lix_history_window_days=lix_history_window_days,
-        )
-        _cat_last_actual = float(np.nanmax(cat_time[np.isfinite(cat_time)])) if np.any(np.isfinite(cat_time)) else float("nan")
-        cat_catalyst_addition = resolve_observed_profile_on_time_grid(
-            source_time_days=pair.catalyzed.time,
-            target_time_days=ext_time,
-            observed_profile=pair.catalyzed.catalyst_addition_mg_l_reconstructed,
-            clip_min=0.0,
-        )
-        if cat_catalyst_addition is None:
-            cat_catalyst_addition = reconstruct_catalyst_feed_conc_mg_l(
-                catalyst_cum_kg_t=np.asarray(cat_catalyst_cum, dtype=float),
-                lixiviant_cum_m3_t=np.asarray(cat_lixiviant_cum, dtype=float),
-            )
-        cat_catalyst_conc_col = _compute_cstr_column_concentration(
-            time_days=ext_time,
-            column_inner_diameter_m=column_inner_diameter_m,
-            column_height_m=column_height_m,
-            irrigation_rate_l_m2_h=np.asarray(cat_irrigation_rate, dtype=float),
-            catalyst_feed_conc_mg_l=np.asarray(cat_catalyst_addition, dtype=float),
-        )
-        new_pair.catalyzed = CurveData(
-            status=pair.catalyzed.status,
-            time=ext_time,
-            recovery=ext_recovery,
-            catalyst_cum=cat_catalyst_cum,
-            lixiviant_cum=cat_lixiviant_cum,
-            irrigation_rate_l_m2_h=cat_irrigation_rate,
-            catalyst_addition_mg_l_reconstructed=np.asarray(cat_catalyst_addition, dtype=float),
-            fit_params=pair.catalyzed.fit_params,
-            row_index=pair.catalyzed.row_index,
-            fit_curve_mode=pair.catalyzed.fit_curve_mode,
-            fit_gate_mid_day=pair.catalyzed.fit_gate_mid_day,
-            fit_gate_width_day=pair.catalyzed.fit_gate_width_day,
-            prefit_fit_start_day=pair.catalyzed.prefit_fit_start_day,
-            prefit_fit_start_day_source=pair.catalyzed.prefit_fit_start_day_source,
-            pls_orp_profile=pair.catalyzed.pls_orp_profile,
-            col_id=pair.catalyzed.col_id,
-            catalyst_conc_col_mg_l=np.asarray(cat_catalyst_conc_col, dtype=float),
-            catalyst_start_day=pair.catalyzed.catalyst_start_day,
-            catalyst_start_day_source=pair.catalyzed.catalyst_start_day_source,
-            catalyst_effective_start_day=pair.catalyzed.catalyst_effective_start_day,
-            catalyst_effective_start_day_source=pair.catalyzed.catalyst_effective_start_day_source,
-            catalyst_stop_day=pair.catalyzed.catalyst_stop_day,
-            avg_catalyst_dose_mg_l=pair.catalyzed.avg_catalyst_dose_mg_l,
-            catalyst_dosage_start_day=pair.catalyzed.catalyst_dosage_start_day,
-            catalyst_dosage_stop_day=pair.catalyzed.catalyst_dosage_stop_day,
-            last_actual_day=_cat_last_actual,
-        )
-    
-    return new_pair
 
 
 def curve_augmentation_cache_key(curve: "CurveData") -> Tuple[int, str, str]:
@@ -12361,6 +11754,98 @@ def _prefit_param_distillation_penalty(
     return total_loss / total_weight
 
 
+def _double_exp_value_slope_asymptote_at_day(
+    params: torch.Tensor,
+    target_day: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    p = torch.as_tensor(params)
+    if p.ndim == 1:
+        p = p.view(1, -1)
+    if p.shape[-1] < 4:
+        zero = torch.zeros((p.shape[0], 1), dtype=p.dtype, device=p.device)
+        return zero, zero, zero, torch.zeros_like(zero, dtype=torch.bool)
+
+    p4 = p[..., :4]
+    finite = torch.isfinite(p4).all(dim=-1, keepdim=True)
+    a1 = torch.clamp(p4[:, 0:1], min=0.0)
+    b1 = torch.clamp(p4[:, 1:2], min=1e-8)
+    a2 = torch.clamp(p4[:, 2:3], min=0.0)
+    b2 = torch.clamp(p4[:, 3:4], min=1e-8)
+    t = torch.full_like(a1, max(float(target_day), 0.0))
+    e1 = torch.exp(-b1 * t)
+    e2 = torch.exp(-b2 * t)
+    y = a1 * (1.0 - e1) + a2 * (1.0 - e2)
+    slope = a1 * b1 * e1 + a2 * b2 * e2
+    asymptote = a1 + a2
+    return y, slope, asymptote, finite
+
+
+def _target_day_flatness_penalty(
+    pred_params: torch.Tensor,
+    prefit_params: Optional[torch.Tensor],
+    target_day: float,
+    min_asymptote_frac: float,
+    max_slope_pct_per_day: float,
+    prefit_slope_margin_pct_per_day: float,
+) -> torch.Tensor:
+    pred = torch.as_tensor(pred_params)
+    y_day, slope_day, asymptote, finite = _double_exp_value_slope_asymptote_at_day(pred, target_day)
+    if not torch.any(finite):
+        return torch.zeros((), dtype=pred.dtype, device=pred.device)
+
+    min_frac = float(np.clip(min_asymptote_frac, 0.0, 1.0))
+    max_slope = max(0.0, float(max_slope_pct_per_day))
+    margin = max(0.0, float(prefit_slope_margin_pct_per_day))
+
+    target_slope = torch.full_like(slope_day, max_slope)
+    if prefit_params is not None:
+        _, prefit_slope, _, prefit_finite = _double_exp_value_slope_asymptote_at_day(
+            torch.as_tensor(prefit_params, dtype=pred.dtype, device=pred.device),
+            target_day,
+        )
+        target_slope = torch.where(
+            prefit_finite,
+            torch.minimum(target_slope, torch.clamp(prefit_slope, min=0.0) + margin),
+            target_slope,
+        )
+
+    shortfall = torch.relu(min_frac * asymptote - y_day)
+    slope_excess = torch.relu(slope_day - target_slope)
+    valid = finite.to(dtype=pred.dtype)
+    shortfall_loss = F.smooth_l1_loss(shortfall / 5.0, torch.zeros_like(shortfall), reduction="none")
+    slope_loss = F.smooth_l1_loss(365.0 * slope_excess, torch.zeros_like(slope_excess), reduction="none")
+    loss = (shortfall_loss + slope_loss) * valid
+    return torch.sum(loss) / torch.clamp(valid.sum(), min=1.0)
+
+
+def _tail_window_slope_penalty(
+    pred_params: torch.Tensor,
+    target_day: float,
+    window_days: float,
+) -> torch.Tensor:
+    pred = torch.as_tensor(pred_params)
+    if pred.ndim == 1:
+        pred = pred.view(1, -1)
+    window = max(float(window_days), 1.0)
+    end_day = max(float(target_day), window)
+    start_day = max(0.0, end_day - window)
+
+    y_start, _, _, finite_start = _double_exp_value_slope_asymptote_at_day(pred, start_day)
+    y_end, _, _, finite_end = _double_exp_value_slope_asymptote_at_day(pred, end_day)
+    finite = finite_start & finite_end
+    if not torch.any(finite):
+        return torch.zeros((), dtype=pred.dtype, device=pred.device)
+
+    pred_delta = torch.clamp(y_end - y_start, min=0.0)
+    _tail_thr = max(1e-6, float(CONFIG.get("tail_delta_threshold_pct", 2.0)))
+    _k = max(0.5, float(CONFIG.get("tail_softplus_sharpness", 4.0)))
+    excess_norm = _k * (pred_delta / _tail_thr - 1.0)
+    smooth_excess = F.softplus(excess_norm) / _k * _tail_thr
+    valid = finite.to(dtype=pred.dtype)
+    loss = F.smooth_l1_loss(smooth_excess, torch.zeros_like(smooth_excess), reduction="none")
+    return torch.sum(loss * valid) / torch.clamp(valid.sum(), min=1.0)
+
+
 def _primary_fraction_prior_penalty(
     pred_frac: torch.Tensor,
     target_prior_frac: torch.Tensor,
@@ -12617,6 +12102,48 @@ def _pair_training_loss_from_tensors(
         param_pen = param_pen + _prefit_param_distillation_penalty(p_ctrl, ctrl_prefit_params)
     if cat_prefit_params is not None:
         param_pen = param_pen + _prefit_param_distillation_penalty(p_cat, cat_prefit_params)
+    target_day_flatness_day = float(
+        CONFIG.get(
+            "training_target_day_flatness_day",
+            CONFIG.get("prefit_asymptote_target_day", 2500.0),
+        )
+    )
+    target_day_min_frac = float(
+        CONFIG.get(
+            "training_target_day_min_asymptote_frac",
+            CONFIG.get("prefit_target_day_min_asymptote_frac", 0.95),
+        )
+    )
+    target_day_max_slope = float(
+        CONFIG.get(
+            "training_target_day_max_slope_pct_per_day",
+            CONFIG.get("prefit_target_day_max_slope_pct_per_day", 0.00002),
+        )
+    )
+    target_day_prefit_slope_margin = float(
+        CONFIG.get("training_target_day_prefit_slope_margin_pct_per_day", target_day_max_slope)
+    )
+    ctrl_target_day_flatness_pen = _target_day_flatness_penalty(
+        p_ctrl,
+        ctrl_prefit_params,
+        target_day=target_day_flatness_day,
+        min_asymptote_frac=target_day_min_frac,
+        max_slope_pct_per_day=target_day_max_slope,
+        prefit_slope_margin_pct_per_day=target_day_prefit_slope_margin,
+    )
+    cat_target_day_flatness_pen = _target_day_flatness_penalty(
+        p_cat,
+        cat_prefit_params,
+        target_day=target_day_flatness_day,
+        min_asymptote_frac=target_day_min_frac,
+        max_slope_pct_per_day=target_day_max_slope,
+        prefit_slope_margin_pct_per_day=target_day_prefit_slope_margin,
+    )
+    cat_tail_window_slope_pen = _tail_window_slope_penalty(
+        p_cat,
+        target_day=target_day_flatness_day,
+        window_days=float(CONFIG.get("training_tail_slope_window_days", 500.0)),
+    )
     primary_fraction_prior_pen = torch.zeros((), dtype=pred_ctrl.dtype, device=pred_ctrl.device)
     if "cpy_leach_frac_ctrl" in latent and "primary_control_prior_frac" in latent:
         primary_fraction_prior_pen = primary_fraction_prior_pen + _primary_fraction_prior_penalty(
@@ -12773,6 +12300,9 @@ def _pair_training_loss_from_tensors(
         + float(loss_weights.get("control_interp_fit", 0.0)) * control_interp_fit_pen
         + float(loss_weights.get("control_early_fit", 0.0)) * control_early_fit_pen
         + float(loss_weights.get("control_tail_fit", 0.0)) * control_tail_fit_pen
+        + float(loss_weights.get("control_target_day_flatness", 0.0)) * ctrl_target_day_flatness_pen
+        + float(loss_weights.get("catalyzed_target_day_flatness", 0.0)) * cat_target_day_flatness_pen
+        + float(loss_weights.get("catalyzed_tail_window_slope", 0.0)) * cat_tail_window_slope_pen
         + float(loss_weights.get("pre_catalyst_control_fit", 0.0)) * pre_catalyst_control_fit_pen
         + float(loss_weights.get("control_early_process", 0.0)) * control_early_process_pen
         + float(loss_weights.get("tau_onset", 0.0)) * tau_onset_pen
@@ -14719,87 +14249,7 @@ def plot_single_record(record: Dict[str, Any], plot_path: str, title: str) -> No
 
     plt.xlabel("leach_duration_days")
     plt.ylabel("cu_recovery_%")
-    plt.ylim(0, 100)
-    plt.title(title)
-    plt.grid(alpha=0.25)
-    plt.legend()
-    _annotate_ensemble_extension(plt.gca(), record)
-    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=int(CONFIG["plot_dpi"]))
-    plt.close()
-
-
-def plot_ensemble_record(record: Dict[str, Any], plot_path: str, title: str) -> None:
-    plt.figure(figsize=(9, 5))
-
-    ct = np.asarray(record.get("control_plot_time_days", record["control_t"]), dtype=float)
-    cp = np.asarray(record.get("control_pred_plot_mean", record["control_pred_mean"]), dtype=float)
-    cp_lo = np.asarray(record.get("control_pred_plot_p10", record["control_pred_p10"]), dtype=float)
-    cp_hi = np.asarray(record.get("control_pred_plot_p90", record["control_pred_p90"]), dtype=float)
-    cy = np.asarray(record["control_true"], dtype=float)
-
-    kt = np.asarray(record.get("catalyzed_plot_time_days", record["catalyzed_t"]), dtype=float)
-    kp = np.asarray(record.get("catalyzed_pred_plot_mean", record["catalyzed_pred_mean"]), dtype=float)
-    kp_lo = np.asarray(record.get("catalyzed_pred_plot_p10", record["catalyzed_pred_p10"]), dtype=float)
-    kp_hi = np.asarray(record.get("catalyzed_pred_plot_p90", record["catalyzed_pred_p90"]), dtype=float)
-    ky = np.asarray(record["catalyzed_true"], dtype=float)
-    interval_cover_margin_pct = float(CONFIG.get("ensemble_interval_cover_margin_pct", 0.0))
-
-    if bool(CONFIG.get("ensemble_interval_cover_true_curve", True)):
-        kt_band, kp_lo_band, kp_hi_band = predictive_interval_plot_band_with_reference(
-            time_days=kt,
-            low_curve=kp_lo,
-            high_curve=kp_hi,
-            reference_time=np.asarray(record["catalyzed_t"], dtype=float),
-            reference_curve=ky,
-            margin_pct=interval_cover_margin_pct,
-        )
-        ct_band, cp_lo_band, cp_hi_band = predictive_interval_plot_band_with_reference(
-            time_days=ct,
-            low_curve=cp_lo,
-            high_curve=cp_hi,
-            reference_time=np.asarray(record["control_t"], dtype=float),
-            reference_curve=cy,
-            margin_pct=interval_cover_margin_pct,
-        )
-    else:
-        kt_band, kp_lo_band, kp_hi_band = kt, kp_lo, kp_hi
-        ct_band, cp_lo_band, cp_hi_band = ct, cp_lo, cp_hi
-
-    plt.fill_between(kt_band, kp_lo_band, kp_hi_band, color="#ff7f0e", alpha=0.18, label="Catalyzed P10-P90", zorder=1)
-    plt.plot(kt_band, kp_lo_band, "-", lw=0.9, color="#ff7f0e", alpha=0.35, zorder=1)
-    plt.plot(kt_band, kp_hi_band, "-", lw=0.9, color="#ff7f0e", alpha=0.35, zorder=1)
-    plt.plot(kt, kp, "-", lw=2, color="#ff7f0e", label="Catalyzed Ensemble Mean", zorder=2)
-    plt.plot(
-        np.asarray(record["catalyzed_t"], dtype=float),
-        ky,
-        "o",
-        ms=3,
-        alpha=0.6,
-        color="#ff7f0e",
-        label="Catalyzed True",
-        zorder=3,
-    )
-
-    plt.fill_between(ct_band, cp_lo_band, cp_hi_band, color="#1f77b4", alpha=0.18, label="Control P10-P90", zorder=4)
-    plt.plot(ct_band, cp_lo_band, "-", lw=0.9, color="#1f77b4", alpha=0.35, zorder=4)
-    plt.plot(ct_band, cp_hi_band, "-", lw=0.9, color="#1f77b4", alpha=0.35, zorder=4)
-    plt.plot(ct, cp, "-", lw=2, color="#1f77b4", label="Control Ensemble Mean", zorder=5)
-    plt.plot(
-        np.asarray(record["control_t"], dtype=float),
-        cy,
-        "o",
-        ms=3,
-        alpha=0.6,
-        color="#1f77b4",
-        label="Control True",
-        zorder=6,
-    )
-
-    plt.xlabel("leach_duration_days")
-    plt.ylabel("cu_recovery_%")
-    plt.ylim(0, 100)
+    plt.ylim(0, 80)
     plt.title(title)
     plt.grid(alpha=0.25)
     plt.legend()
@@ -14984,7 +14434,7 @@ def plot_ensemble_records_per_sample(
 
         ax.set_xlabel("Leach Duration (days)")
         ax.set_ylabel("Cu Recovery (%)")
-        ax.set_ylim(0, 100)
+        ax.set_ylim(0, 80)
         ax.grid(alpha=0.25, linestyle="--")
         ax.legend(loc="best", fontsize=8)
         apply_sample_plot_titles(
